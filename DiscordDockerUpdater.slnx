@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DiscordDockerUpdater/DiscordDockerUpdater.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DiscordDockerUpdater.Tests/DiscordDockerUpdater.Tests.csproj" />
+  </Folder>
+</Solution>
