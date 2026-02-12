@@ -194,7 +194,7 @@ docker compose -f <config_file> up -d <service>
 
 ### Technology Stack
 
-- **.NET 9.0** - Latest .NET framework with native AOT ready
+- **.NET 10.0** - Latest .NET framework with native AOT ready
 - **ASP.NET Core Minimal API** - Lightweight HTTP server for webhooks
 - **Discord.Net 3.18.0** - Comprehensive Discord bot framework
 - **Docker CLI** - Installed in container for compose command execution
@@ -255,7 +255,7 @@ DiscordDockerUpdater.slnx
 
 ### Prerequisites
 
-- .NET 9 SDK
+- .NET 10 SDK
 - Docker Desktop (for local testing)
 - Visual Studio 2022 / VS Code / Rider
 
@@ -365,4 +365,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ---
 
-**Built with ❤️ using .NET 9 and modern C# best practices**
+**Built with ❤️ using .NET 10 and modern C# best practices**
