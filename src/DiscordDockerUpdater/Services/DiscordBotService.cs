@@ -60,6 +60,34 @@ public class DiscordBotService(
         await interactionService.RegisterCommandsGloballyAsync();
 
         logger.LogInformation("Slash commands registered globally");
+
+        // Post a startup message to the configured channel
+        if (_config.ChannelId != 0)
+        {
+            try
+            {
+                if (client.GetChannel(_config.ChannelId) is IMessageChannel channel)
+                {
+                    var embed = new EmbedBuilder()
+                        .WithTitle("🟢 Bot Online")
+                        .WithDescription($"**{client.CurrentUser.Username}** is ready and listening for Docker image updates.")
+                        .WithColor(0x00FF00)
+                        .WithTimestamp(DateTimeOffset.UtcNow)
+                        .Build();
+
+                    await channel.SendMessageAsync(embed: embed);
+                    logger.LogInformation("Startup message posted to channel {ChannelId}", _config.ChannelId);
+                }
+                else
+                {
+                    logger.LogWarning("Could not find channel {ChannelId} to post startup message", _config.ChannelId);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to post startup message to channel {ChannelId}", _config.ChannelId);
+            }
+        }
     }
 
     private async Task HandleInteractionAsync(SocketInteraction interaction)

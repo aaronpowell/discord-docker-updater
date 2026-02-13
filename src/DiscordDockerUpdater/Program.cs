@@ -8,6 +8,8 @@ using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.Configuration.AddUserSecrets<Program>(optional: true);
+
 // Configure strongly-typed settings
 builder.Services.Configure<BotConfiguration>(
     builder.Configuration.GetSection(BotConfiguration.SectionName));
@@ -39,13 +41,13 @@ app.MapGet("/health", (UpdateTracker tracker, DiscordSocketClient client) =>
         discord = client.ConnectionState == ConnectionState.Connected ? "connected" : "disconnected",
         pendingUpdates = tracker.GetPendingCount()
     };
-    
+
     return Results.Ok(status);
 })
 .WithName("HealthCheck");
 
 // Webhook endpoint for receiving Diun notifications
-app.MapPost("/webhook/diun", async (DiunPayload payload, UpdateTracker tracker, 
+app.MapPost("/webhook/diun", async (DiunPayload payload, UpdateTracker tracker,
     DiscordNotificationService notifier, ILogger<Program> logger) =>
 {
     // Validate required fields
@@ -64,12 +66,12 @@ app.MapPost("/webhook/diun", async (DiunPayload payload, UpdateTracker tracker,
             payload.Image,
             payload.Digest,
             existingUpdate.Id);
-        
-        return Results.Ok(new 
-        { 
-            updateId = existingUpdate.Id, 
+
+        return Results.Ok(new
+        {
+            updateId = existingUpdate.Id,
             receivedAt = existingUpdate.ReceivedAt,
-            duplicate = true 
+            duplicate = true
         });
     }
 
@@ -106,7 +108,7 @@ app.Run();
 static void ValidateConfiguration(IServiceProvider services, ILogger logger)
 {
     var config = services.GetRequiredService<IOptions<BotConfiguration>>().Value;
-    
+
     // Critical: Discord token must be configured (via environment variable or user secrets, not appsettings.json)
     if (string.IsNullOrWhiteSpace(config.DiscordToken))
     {
@@ -116,7 +118,7 @@ static void ValidateConfiguration(IServiceProvider services, ILogger logger)
         throw new InvalidOperationException(
             "Discord bot token is not configured. The application cannot start without a valid token.");
     }
-    
+
     // Warning: Channel ID should be configured for notifications
     if (config.ChannelId == 0)
     {
@@ -125,6 +127,6 @@ static void ValidateConfiguration(IServiceProvider services, ILogger logger)
             "The bot will work but cannot post automatic notifications. " +
             "Only slash commands will be available.");
     }
-    
+
     logger.LogInformation("Configuration validation completed successfully");
 }
