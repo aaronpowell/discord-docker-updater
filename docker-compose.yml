@@ -12,3 +12,26 @@ services:
     environment:
       - Bot__DiscordToken=${DISCORD_TOKEN}
       - Bot__ChannelId=${DISCORD_CHANNEL_ID}
+
+  diun:
+    image: crazymax/diun:latest
+    command: serve
+    depends_on:
+      - discord-docker-updater
+    volumes:
+      - "./diun-data:/data"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    environment:
+      - "TZ=Australia/Sydney"
+      - "DIUN_WATCH_WORKERS=20"
+      - "DIUN_WATCH_SCHEDULE=0 */6 * * *"
+      - "DIUN_WATCH_JITTER=30s"
+      - "DIUN_PROVIDERS_DOCKER=true"
+      - "DIUN_NOTIF_WEBHOOK_ENDPOINT=http://discord-docker-updater:8080/webhook/diun"
+      - "DIUN_NOTIF_WEBHOOK_METHOD=POST"
+      - "DIUN_NOTIF_WEBHOOK_HEADERS_Content-Type=application/json"
+      - "DIUN_NOTIF_WEBHOOK_TIMEOUT=10s"
+      - "DIUN_DEFAULTS_INCLUDETAGS=latest,nightly"
+    labels:
+      - "diun.enable=true"
+    restart: always
