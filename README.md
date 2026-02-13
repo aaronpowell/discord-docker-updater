@@ -170,7 +170,7 @@ Or use host network mode / expose the port and use `http://<host-ip>:8080/webhoo
 
 ### Auto-Discovery via Docker Socket
 
-The bot **automatically discovers** which Docker Compose project a container belongs to by inspecting labels on running containers via the Docker socket. This works the same way [Watchtower](https://containrrr.dev/watchtower/) does — no manual project mapping required.
+The bot **automatically discovers** which Docker Compose project a container belongs to by inspecting labels on running containers via the Docker socket — no manual project mapping required.
 
 When Diun sends a notification about a container, the bot runs `docker inspect` and reads these standard Docker Compose labels:
 
