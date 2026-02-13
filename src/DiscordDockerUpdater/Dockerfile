@@ -1,5 +1,5 @@
 # Build stage
-FROM mcr.microsoft.com/dotnet/sdk:10.0-preview AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY ["src/DiscordDockerUpdater/DiscordDockerUpdater.csproj", "src/DiscordDockerUpdater/"]
 RUN dotnet restore "src/DiscordDockerUpdater/DiscordDockerUpdater.csproj"
@@ -8,7 +8,7 @@ WORKDIR "/src/src/DiscordDockerUpdater"
 RUN dotnet publish -c Release -o /app/publish /p:UseAppHost=false
 
 # Runtime stage
-FROM mcr.microsoft.com/dotnet/aspnet:10.0-preview
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app
 
 # Install Docker CLI (needed for docker compose commands)
