@@ -53,7 +53,7 @@ This bot bridges the gap between Diun's update detection and actual container de
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/discord-docker-updater.git
+git clone https://github.com/aaronpowell/discord-docker-updater.git
 cd discord-docker-updater
 ```
 
