@@ -1,0 +1,110 @@
+@host = http://localhost:8080
+
+### New image update - simulates Diun detecting a new image version
+POST {{host}}/webhook/diun
+Content-Type: application/json
+
+{
+  "diun_version": "4.28.0",
+  "hostname": "my-server",
+  "status": "new",
+  "provider": "docker",
+  "image": "ghcr.io/linuxserver/plex:latest",
+  "hub_link": "https://ghcr.io/linuxserver/plex",
+  "mime_type": "application/vnd.oci.image.manifest.v1+json",
+  "digest": "sha256:abc123def456789",
+  "created": "2026-02-14T10:30:00Z",
+  "platform": "linux/amd64",
+  "metadata": {
+    "ctn_names": "plex",
+    "ctn_id": "a1b2c3d4e5f6",
+    "ctn_status": "running (2 days ago)",
+    "ctn_state": "running",
+    "ctn_command": "/init",
+    "ctn_created_at": "2026-02-12T08:00:00Z",
+    "ctn_size": "250MB"
+  }
+}
+
+### Updated image - simulates Diun detecting an update to an existing image
+POST {{host}}/webhook/diun
+Content-Type: application/json
+
+{
+  "diun_version": "4.28.0",
+  "hostname": "my-server",
+  "status": "update",
+  "provider": "docker",
+  "image": "homeassistant/home-assistant:latest",
+  "hub_link": "https://hub.docker.com/r/homeassistant/home-assistant",
+  "mime_type": "application/vnd.docker.distribution.manifest.v2+json",
+  "digest": "sha256:def789abc012345",
+  "created": "2026-02-14T12:00:00Z",
+  "platform": "linux/amd64",
+  "metadata": {
+    "ctn_names": "homeassistant",
+    "ctn_id": "f6e5d4c3b2a1",
+    "ctn_status": "running (5 days ago)",
+    "ctn_state": "running",
+    "ctn_command": "/init",
+    "ctn_created_at": "2026-02-09T14:00:00Z",
+    "ctn_size": "1.2GB"
+  }
+}
+
+### Duplicate digest - should be rejected by UpdateTracker
+POST {{host}}/webhook/diun
+Content-Type: application/json
+
+{
+  "diun_version": "4.28.0",
+  "hostname": "my-server",
+  "status": "new",
+  "provider": "docker",
+  "image": "ghcr.io/linuxserver/plex:latest",
+  "hub_link": "https://ghcr.io/linuxserver/plex",
+  "mime_type": "application/vnd.oci.image.manifest.v1+json",
+  "digest": "sha256:abc123def456789",
+  "created": "2026-02-14T10:30:00Z",
+  "platform": "linux/amd64",
+  "metadata": {
+    "ctn_names": "plex",
+    "ctn_id": "a1b2c3d4e5f6",
+    "ctn_status": "running (2 days ago)",
+    "ctn_state": "running"
+  }
+}
+
+### Minimal payload - only required fields
+POST {{host}}/webhook/diun
+Content-Type: application/json
+
+{
+  "diun_version": "4.28.0",
+  "hostname": "my-server",
+  "status": "new",
+  "provider": "docker",
+  "image": "nginx:latest",
+  "digest": "sha256:999888777666555",
+  "metadata": {
+    "ctn_names": "nginx-proxy",
+    "ctn_id": "112233445566",
+    "ctn_state": "running"
+  }
+}
+
+### Missing image field - should trigger a warning
+POST {{host}}/webhook/diun
+Content-Type: application/json
+
+{
+  "diun_version": "4.28.0",
+  "hostname": "my-server",
+  "status": "new",
+  "provider": "docker",
+  "metadata": {
+    "ctn_names": "unknown-container",
+    "ctn_id": "000000000000",
+    "ctn_state": "running"
+  }
+}
