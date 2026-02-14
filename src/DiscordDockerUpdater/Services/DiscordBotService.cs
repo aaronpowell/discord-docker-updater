@@ -44,7 +44,7 @@ public class DiscordBotService(
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         logger.LogInformation("Discord bot service stopping");
-        
+
         await client.LogoutAsync();
         await client.StopAsync();
     }
@@ -68,12 +68,19 @@ public class DiscordBotService(
             {
                 if (client.GetChannel(_config.ChannelId) is IMessageChannel channel)
                 {
-                    var embed = new EmbedBuilder()
+                    var embedBuilder = new EmbedBuilder()
                         .WithTitle("🟢 Bot Online")
                         .WithDescription($"**{client.CurrentUser.Username}** is ready and listening for Docker image updates.")
                         .WithColor(0x00FF00)
-                        .WithTimestamp(DateTimeOffset.UtcNow)
-                        .Build();
+                        .WithTimestamp(DateTimeOffset.UtcNow);
+
+                    // Add logo thumbnail if configured
+                    if (!string.IsNullOrWhiteSpace(_config.LogoUrl))
+                    {
+                        embedBuilder.WithThumbnailUrl(_config.LogoUrl);
+                    }
+
+                    var embed = embedBuilder.Build();
 
                     await channel.SendMessageAsync(embed: embed);
                     logger.LogInformation("Startup message posted to channel {ChannelId}", _config.ChannelId);
@@ -115,7 +122,7 @@ public class DiscordBotService(
                 var response = interaction.HasResponded
                     ? interaction.FollowupAsync("An error occurred while processing the command.", ephemeral: true)
                     : interaction.RespondAsync("An error occurred while processing the command.", ephemeral: true);
-                
+
                 await response;
             }
         }
@@ -176,7 +183,7 @@ public class DiscordBotService(
         catch (Exception ex)
         {
             logger.LogError(ex, "Exception handling button interaction");
-            
+
             // Try to respond with an error if we haven't responded yet
             try
             {
@@ -205,7 +212,7 @@ public class DiscordBotService(
                 "Update {UpdateId} has already been processed, ignoring duplicate button press by {User}",
                 update.Id,
                 component.User.Username);
-            
+
             await component.RespondAsync(
                 "⚠️ This update has already been processed.",
                 ephemeral: true);
@@ -227,7 +234,7 @@ public class DiscordBotService(
 
         // Resolve the compose project via docker inspect
         var composeInfo = await containerInspector.InspectAsync(containerName);
-        
+
         if (composeInfo == null)
         {
             logger.LogWarning(
@@ -249,7 +256,7 @@ public class DiscordBotService(
         }
 
         var serviceName = composeInfo.ServiceName;
-        
+
         logger.LogInformation(
             "Resolved container '{ContainerName}' to compose project '{ProjectName}', service '{ServiceName}'",
             containerName,
@@ -261,14 +268,14 @@ public class DiscordBotService(
         try
         {
             result = await composeExecutor.UpdateServiceAsync(
-                composeInfo.ConfigFile, 
-                serviceName, 
+                composeInfo.ConfigFile,
+                serviceName,
                 CancellationToken.None);
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Exception during compose execution for service '{ServiceName}'", serviceName);
-            
+
             var exceptionEmbed = new EmbedBuilder()
                 .WithTitle("❌ Update Failed")
                 .WithDescription($"An exception occurred while updating **{imageName}**")
@@ -333,16 +340,16 @@ public class DiscordBotService(
             if (!string.IsNullOrWhiteSpace(result.PullOutput))
             {
                 detailsEmbedBuilder.AddField(
-                    "Pull Output", 
-                    TruncateForDiscord(result.PullOutput, 1024), 
+                    "Pull Output",
+                    TruncateForDiscord(result.PullOutput, 1024),
                     inline: false);
             }
 
             if (!string.IsNullOrWhiteSpace(result.UpOutput))
             {
                 detailsEmbedBuilder.AddField(
-                    "Up Output", 
-                    TruncateForDiscord(result.UpOutput, 1024), 
+                    "Up Output",
+                    TruncateForDiscord(result.UpOutput, 1024),
                     inline: false);
             }
 
@@ -455,7 +462,7 @@ public class DiscordBotService(
         catch (Exception ex)
         {
             logger.LogError(ex, "Failed to update Discord message for dismissed update {UpdateId}", update.Id);
-            
+
             // Fallback: respond with ephemeral message
             await component.RespondAsync($"Update dismissed by {component.User.Mention}", ephemeral: true);
         }

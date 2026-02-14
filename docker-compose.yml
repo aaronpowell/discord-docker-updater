@@ -6,12 +6,13 @@ services:
     container_name: discord-docker-updater
     restart: unless-stopped
     ports:
-      - "8080:8080"  # For diun webhook
+      - "8080:8080" # For diun webhook
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock  # Docker socket for container inspection + compose commands
+      - /var/run/docker.sock:/var/run/docker.sock # Docker socket for container inspection + compose commands
     environment:
       - Bot__DiscordToken=${DISCORD_TOKEN}
       - Bot__ChannelId=${DISCORD_CHANNEL_ID}
+      # - Bot__LogoUrl=https://raw.githubusercontent.com/yourusername/discord-docker-updater/main/assets/logo.png
 
   diun:
     image: crazymax/diun:latest

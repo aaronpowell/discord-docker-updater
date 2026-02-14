@@ -58,7 +58,7 @@ public class DiscordNotificationService(
         {
             // Send the message
             var message = await channel.SendMessageAsync(embed: embed, components: components);
-            
+
             // Update the tracker with the Discord message ID
             update.DiscordMessageId = message.Id;
 
@@ -71,8 +71,8 @@ public class DiscordNotificationService(
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, 
-                "Failed to send Discord message for update {UpdateId}", 
+            logger.LogError(ex,
+                "Failed to send Discord message for update {UpdateId}",
                 update.Id);
             throw;
         }
@@ -90,6 +90,12 @@ public class DiscordNotificationService(
             .WithColor(0xFFA500) // Orange
             .WithTimestamp(update.ReceivedAt)
             .WithFooter($"Update ID: {update.Id}");
+
+        // Add logo thumbnail if configured
+        if (!string.IsNullOrWhiteSpace(_config.LogoUrl))
+        {
+            builder.WithThumbnailUrl(_config.LogoUrl);
+        }
 
         // Add key fields from the payload
         if (!string.IsNullOrWhiteSpace(payload.Image))

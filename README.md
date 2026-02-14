@@ -1,4 +1,8 @@
-# Discord Docker Updater
+<div align="center">
+  <img src="assets/logo.png" alt="Discord Docker Updater Logo" width="200"/>
+  
+  # Discord Docker Updater
+</div>
 
 A self-hosted Discord bot that integrates with [Diun](https://github.com/crazy-max/diun) (Docker Image Update Notifier) to provide interactive Docker container update management through Discord. Receive webhook notifications when container images are updated, then approve and execute updates directly from Discord with interactive buttons.
 
@@ -124,7 +128,31 @@ All settings live under the `Bot` section and can be set via environment variabl
 |---------|-------------|-------------|---------|
 | `DiscordToken` | `Bot__DiscordToken` | Discord bot token (required) | — |
 | `ChannelId` | `Bot__ChannelId` | Discord channel ID for notifications (required) | — |
+| `LogoUrl` | `Bot__LogoUrl` | Optional URL to logo image for Discord embeds | — |
 | `StaleUpdateRetentionDays` | `Bot__StaleUpdateRetentionDays` | Days to keep pending updates before cleanup | `7` |
+
+#### Using the Logo in Discord
+
+The bot can display your logo as a thumbnail in Discord notification embeds. To use it:
+
+**Option 1: Host the logo publicly**
+1. Upload the logo to a publicly accessible location:
+   - GitHub raw URL: `https://raw.githubusercontent.com/yourusername/discord-docker-updater/main/assets/logo.png`
+   - CDN or image hosting service
+2. Set the `Bot__LogoUrl` environment variable to the public URL
+
+```env
+Bot__LogoUrl=https://raw.githubusercontent.com/yourusername/discord-docker-updater/main/assets/logo.png
+```
+
+**Option 2: Set as bot avatar**
+1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
+2. Select your application
+3. Navigate to "Bot" tab
+4. Click on the bot avatar area to upload `assets/logo.png`
+5. Save changes
+
+The bot avatar will appear next to all messages from the bot. Using both the avatar and `LogoUrl` gives the most polished appearance.
 
 ### Diun Configuration
 
