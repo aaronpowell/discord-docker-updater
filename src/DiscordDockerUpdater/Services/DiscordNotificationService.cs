@@ -15,6 +15,13 @@ public class DiscordNotificationService(
     ILogger<DiscordNotificationService> logger)
 {
     private readonly BotConfiguration _config = config.Value;
+    private readonly TaskCompletionSource _readyTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>
+    /// Called by DiscordBotService when the Ready event fires to signal that
+    /// the guild/channel cache is populated and the client is fully operational.
+    /// </summary>
+    public void SignalReady() => _readyTcs.TrySetResult();
 
     /// <summary>
     /// Posts an interactive embed to the configured Discord channel for a pending update.
@@ -73,38 +80,37 @@ public class DiscordNotificationService(
     }
 
     /// <summary>
-    /// Waits for the Discord client to reach the Connected state, with polling and timeout.
-    /// Handles the startup race condition where webhooks arrive before the bot is fully connected.
+    /// Waits for the Discord client to be fully ready (guild/channel cache populated),
+    /// not just connected. The Ready event is signaled via <see cref="SignalReady"/>.
     /// </summary>
     private async Task WaitForConnectionAsync(string updateId, int timeoutSeconds = 30)
     {
-        if (client.ConnectionState == ConnectionState.Connected)
+        if (_readyTcs.Task.IsCompleted)
         {
             return;
         }
 
         logger.LogInformation(
-            "Discord client not yet connected (state: {State}). Waiting for connection before sending notification for update {UpdateId}",
+            "Discord client not yet ready (state: {State}). Waiting for Ready event before sending notification for update {UpdateId}",
             client.ConnectionState,
             updateId);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
-        while (client.ConnectionState != ConnectionState.Connected)
+        try
         {
-            if (cts.Token.IsCancellationRequested)
-            {
-                logger.LogWarning(
-                    "Timed out waiting for Discord client to connect (state: {State}). Cannot send notification for update {UpdateId}",
-                    client.ConnectionState,
-                    updateId);
-                throw new InvalidOperationException(
-                    $"Discord client did not connect within {timeoutSeconds}s (current state: {client.ConnectionState})");
-            }
-
-            await Task.Delay(500, cts.Token);
+            await _readyTcs.Task.WaitAsync(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            logger.LogWarning(
+                "Timed out waiting for Discord client to be ready (state: {State}). Cannot send notification for update {UpdateId}",
+                client.ConnectionState,
+                updateId);
+            throw new InvalidOperationException(
+                $"Discord client did not become ready within {timeoutSeconds}s (current state: {client.ConnectionState})");
         }
 
-        logger.LogInformation("Discord client connected. Proceeding with notification for update {UpdateId}", updateId);
+        logger.LogInformation("Discord client ready. Proceeding with notification for update {UpdateId}", updateId);
     }
 
     /// <summary>

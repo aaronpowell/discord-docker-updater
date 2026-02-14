@@ -15,7 +15,8 @@ public class DiscordBotService(
     ILogger<DiscordBotService> logger,
     UpdateTracker updateTracker,
     ContainerInspector containerInspector,
-    DockerComposeExecutor composeExecutor) : IHostedService
+    DockerComposeExecutor composeExecutor,
+    DiscordNotificationService notificationService) : IHostedService
 {
     private readonly BotConfiguration _config = config.Value;
 
@@ -52,6 +53,9 @@ public class DiscordBotService(
     private async Task OnReadyAsync()
     {
         logger.LogInformation("Discord bot is ready. Connected as {Username}", client.CurrentUser.Username);
+
+        // Signal that the client is fully ready (guild/channel cache populated)
+        notificationService.SignalReady();
 
         // Discover and add interaction modules
         await interactionService.AddModulesAsync(Assembly.GetEntryAssembly(), serviceProvider);
