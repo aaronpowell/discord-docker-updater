@@ -27,15 +27,9 @@ public class DiscordNotificationService(
     {
         ArgumentNullException.ThrowIfNull(update);
 
-        // Ensure Discord client is ready
-        if (client.ConnectionState != ConnectionState.Connected)
-        {
-            logger.LogWarning(
-                "Discord client not connected (state: {State}). Cannot send notification for update {UpdateId}",
-                client.ConnectionState,
-                update.Id);
-            throw new InvalidOperationException($"Discord client is not connected (current state: {client.ConnectionState})");
-        }
+        // Wait for Discord client to be ready (handles startup race condition with webhooks)
+        await WaitForConnectionAsync(update.Id);
+
 
         // Get the configured channel
         var channel = client.GetChannel(_config.ChannelId) as IMessageChannel;
@@ -76,6 +70,41 @@ public class DiscordNotificationService(
                 update.Id);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Waits for the Discord client to reach the Connected state, with polling and timeout.
+    /// Handles the startup race condition where webhooks arrive before the bot is fully connected.
+    /// </summary>
+    private async Task WaitForConnectionAsync(string updateId, int timeoutSeconds = 30)
+    {
+        if (client.ConnectionState == ConnectionState.Connected)
+        {
+            return;
+        }
+
+        logger.LogInformation(
+            "Discord client not yet connected (state: {State}). Waiting for connection before sending notification for update {UpdateId}",
+            client.ConnectionState,
+            updateId);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+        while (client.ConnectionState != ConnectionState.Connected)
+        {
+            if (cts.Token.IsCancellationRequested)
+            {
+                logger.LogWarning(
+                    "Timed out waiting for Discord client to connect (state: {State}). Cannot send notification for update {UpdateId}",
+                    client.ConnectionState,
+                    updateId);
+                throw new InvalidOperationException(
+                    $"Discord client did not connect within {timeoutSeconds}s (current state: {client.ConnectionState})");
+            }
+
+            await Task.Delay(500, cts.Token);
+        }
+
+        logger.LogInformation("Discord client connected. Proceeding with notification for update {UpdateId}", updateId);
     }
 
     /// <summary>
