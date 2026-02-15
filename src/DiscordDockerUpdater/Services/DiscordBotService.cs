@@ -103,6 +103,12 @@ public class DiscordBotService(
 
     private async Task HandleInteractionAsync(SocketInteraction interaction)
     {
+        // Skip component interactions (buttons) — they are handled by ButtonExecuted
+        if (interaction is SocketMessageComponent)
+        {
+            return;
+        }
+
         try
         {
             // Create an execution context
