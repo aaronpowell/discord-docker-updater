@@ -1,4 +1,5 @@
 using DiscordDockerUpdater.Services;
+using Docker.DotNet;
 using Microsoft.Extensions.Logging;
 using Moq;
 
@@ -7,17 +8,19 @@ namespace DiscordDockerUpdater.Tests.Services;
 /// <summary>
 /// Unit tests for DockerComposeExecutor.
 /// Tests input validation and result model behavior.
-/// Note: Actual process execution is integration-tested, not unit-tested.
+/// Note: Actual Docker API execution is integration-tested, not unit-tested.
 /// </summary>
 public class DockerComposeExecutorTests
 {
     private readonly Mock<ILogger<DockerComposeExecutor>> _mockLogger;
+    private readonly Mock<IDockerClient> _mockDockerClient;
     private readonly DockerComposeExecutor _executor;
 
     public DockerComposeExecutorTests()
     {
         _mockLogger = new Mock<ILogger<DockerComposeExecutor>>();
-        _executor = new DockerComposeExecutor(_mockLogger.Object);
+        _mockDockerClient = new Mock<IDockerClient>();
+        _executor = new DockerComposeExecutor(_mockDockerClient.Object, _mockLogger.Object);
     }
 
     [Fact]
@@ -102,21 +105,6 @@ public class DockerComposeExecutorTests
             () => _executor.UpdateServiceAsync(composePath, serviceName));
         
         Assert.Contains("Service name", exception.Message);
-    }
-
-    [Fact]
-    public async Task UpdateServiceAsync_WithNonExistentComposePath_ThrowsFileNotFoundException()
-    {
-        // Arrange
-        var composePath = "D:\\nonexistent\\docker-compose.yml";
-        var serviceName = "test-service";
-
-        // Act & Assert
-        var exception = await Assert.ThrowsAsync<FileNotFoundException>(
-            () => _executor.UpdateServiceAsync(composePath, serviceName));
-        
-        Assert.Contains("Compose file not found", exception.Message);
-        Assert.Contains(composePath, exception.Message);
     }
 
     [Fact]

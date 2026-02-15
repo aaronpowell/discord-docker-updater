@@ -1,20 +1,22 @@
 using System.Diagnostics;
-using System.Text;
+using Docker.DotNet;
+using Docker.DotNet.Models;
 
 namespace DiscordDockerUpdater.Services;
 
 /// <summary>
-/// Executes Docker Compose commands (pull and up) for container updates.
-/// Implements robust process execution with timeout handling and comprehensive logging.
+/// Executes Docker container updates (pull and recreate) using the Docker.DotNet SDK.
+/// Replaces the previous process-based Docker Compose approach to avoid CLI version mismatches
+/// on platforms like Synology NAS.
 /// </summary>
-public class DockerComposeExecutor(ILogger<DockerComposeExecutor> logger)
+public class DockerComposeExecutor(IDockerClient dockerClient, ILogger<DockerComposeExecutor> logger)
 {
 
     /// <summary>
     /// Pulls the latest image and recreates the container for a given service.
-    /// Follows the Docker Compose best practice of pull-then-up for zero-downtime updates.
+    /// Uses the Docker.DotNet SDK to communicate directly via the Docker socket.
     /// </summary>
-    /// <param name="composeFilePath">Absolute path to the docker-compose.yml</param>
+    /// <param name="composeFilePath">Absolute path to the docker-compose.yml (used for logging/context)</param>
     /// <param name="serviceName">The service name within the compose file</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Result with success/failure, stdout, stderr</returns>
@@ -23,7 +25,6 @@ public class DockerComposeExecutor(ILogger<DockerComposeExecutor> logger)
         string serviceName, 
         CancellationToken cancellationToken = default)
     {
-        // Input validation following fail-fast principle
         if (string.IsNullOrWhiteSpace(composeFilePath))
         {
             throw new ArgumentException("Compose file path cannot be null or empty", nameof(composeFilePath));
@@ -34,16 +35,8 @@ public class DockerComposeExecutor(ILogger<DockerComposeExecutor> logger)
             throw new ArgumentException("Service name cannot be null or empty", nameof(serviceName));
         }
 
-        if (!File.Exists(composeFilePath))
-        {
-            throw new FileNotFoundException($"Compose file not found: {composeFilePath}", composeFilePath);
-        }
-
-        var workingDirectory = Path.GetDirectoryName(composeFilePath) 
-            ?? throw new InvalidOperationException($"Could not determine directory for compose file: {composeFilePath}");
-
         logger.LogInformation(
-            "Starting Docker Compose update for service '{ServiceName}' using compose file '{ComposePath}'",
+            "Starting Docker update for service '{ServiceName}' using compose file '{ComposePath}'",
             serviceName, 
             composeFilePath);
 
@@ -52,63 +45,94 @@ public class DockerComposeExecutor(ILogger<DockerComposeExecutor> logger)
 
         try
         {
+            // Find the container for this compose service
+            var container = await FindComposeContainerAsync(composeFilePath, serviceName, cancellationToken);
+            if (container == null)
+            {
+                result.Success = false;
+                result.ErrorOutput = $"No container found for compose service '{serviceName}'";
+                logger.LogError("No container found for compose service '{ServiceName}'", serviceName);
+                return result;
+            }
+
+            var containerId = container.ID;
+            var containerName = container.Names.FirstOrDefault()?.TrimStart('/') ?? containerId[..12];
+
+            // Inspect the container to get its full configuration
+            var inspection = await dockerClient.Containers.InspectContainerAsync(containerId, cancellationToken);
+            var currentImage = inspection.Config.Image;
+
             // Step 1: Pull the latest image
-            logger.LogInformation("Executing docker compose pull for service '{ServiceName}'", serviceName);
-            
-            var pullResult = await RunProcessAsync(
-                command: "docker",
-                arguments: $"compose -f \"{composeFilePath}\" pull {serviceName}",
-                workingDirectory: workingDirectory,
-                timeout: TimeSpan.FromMinutes(5),
-                cancellationToken: cancellationToken);
+            logger.LogInformation("Pulling latest image '{Image}' for service '{ServiceName}'", currentImage, serviceName);
 
-            result.PullOutput = pullResult.StdOut;
-
-            if (pullResult.ExitCode != 0)
+            var pullOutput = new System.Text.StringBuilder();
+            var progress = new Progress<JSONMessage>(msg =>
             {
-                result.Success = false;
-                result.ErrorOutput = pullResult.StdErr;
-                logger.LogError(
-                    "Docker compose pull failed for service '{ServiceName}' with exit code {ExitCode}. Error: {Error}",
-                    serviceName,
-                    pullResult.ExitCode,
-                    pullResult.StdErr);
-                return result;
-            }
+                if (!string.IsNullOrEmpty(msg.Status))
+                {
+                    pullOutput.AppendLine(msg.Status + (string.IsNullOrEmpty(msg.ProgressMessage) ? "" : $" {msg.ProgressMessage}"));
+                }
+            });
 
-            logger.LogInformation("Docker compose pull completed successfully for service '{ServiceName}'", serviceName);
+            await dockerClient.Images.CreateImageAsync(
+                new ImagesCreateParameters
+                {
+                    FromImage = GetImageName(currentImage),
+                    Tag = GetImageTag(currentImage)
+                },
+                null,
+                progress,
+                cancellationToken);
 
-            // Step 2: Recreate and start the container with the new image
-            logger.LogInformation("Executing docker compose up for service '{ServiceName}'", serviceName);
+            result.PullOutput = pullOutput.ToString();
+            logger.LogInformation("Image pull completed for service '{ServiceName}'", serviceName);
 
-            var upResult = await RunProcessAsync(
-                command: "docker",
-                arguments: $"compose -f \"{composeFilePath}\" up -d {serviceName}",
-                workingDirectory: workingDirectory,
-                timeout: TimeSpan.FromMinutes(2),
-                cancellationToken: cancellationToken);
-
-            result.UpOutput = upResult.StdOut;
-
-            if (upResult.ExitCode != 0)
+            // Step 2: Stop the container
+            logger.LogInformation("Stopping container '{ContainerName}' for service '{ServiceName}'", containerName, serviceName);
+            await dockerClient.Containers.StopContainerAsync(containerId, new ContainerStopParameters
             {
-                result.Success = false;
-                result.ErrorOutput = upResult.StdErr;
-                logger.LogError(
-                    "Docker compose up failed for service '{ServiceName}' with exit code {ExitCode}. Error: {Error}",
-                    serviceName,
-                    upResult.ExitCode,
-                    upResult.StdErr);
-                return result;
-            }
+                WaitBeforeKillSeconds = 10
+            }, cancellationToken);
 
-            // Success!
+            // Step 3: Remove the old container
+            logger.LogInformation("Removing container '{ContainerName}' for service '{ServiceName}'", containerName, serviceName);
+            await dockerClient.Containers.RemoveContainerAsync(containerId, new ContainerRemoveParameters
+            {
+                Force = false,
+                RemoveVolumes = false
+            }, cancellationToken);
+
+            // Step 4: Create a new container with the same configuration but updated image
+            logger.LogInformation("Creating new container for service '{ServiceName}'", serviceName);
+            var createResponse = await dockerClient.Containers.CreateContainerAsync(new CreateContainerParameters
+            {
+                Image = currentImage,
+                Name = containerName,
+                Hostname = inspection.Config.Hostname,
+                User = inspection.Config.User,
+                Env = inspection.Config.Env,
+                Cmd = inspection.Config.Cmd,
+                Entrypoint = inspection.Config.Entrypoint,
+                WorkingDir = inspection.Config.WorkingDir,
+                Labels = inspection.Config.Labels,
+                ExposedPorts = inspection.Config.ExposedPorts,
+                Volumes = inspection.Config.Volumes,
+                StopSignal = inspection.Config.StopSignal,
+                HostConfig = inspection.HostConfig,
+                NetworkingConfig = BuildNetworkingConfig(inspection)
+            }, cancellationToken);
+
+            // Step 5: Start the new container
+            logger.LogInformation("Starting new container '{ContainerName}' for service '{ServiceName}'", containerName, serviceName);
+            await dockerClient.Containers.StartContainerAsync(createResponse.ID, new ContainerStartParameters(), cancellationToken);
+
+            result.UpOutput = $"Container '{containerName}' recreated and started with latest image.";
             result.Success = true;
             stopwatch.Stop();
             result.Duration = stopwatch.Elapsed;
 
             logger.LogInformation(
-                "Docker Compose update completed successfully for service '{ServiceName}' in {Duration:F2} seconds",
+                "Docker update completed successfully for service '{ServiceName}' in {Duration:F2} seconds",
                 serviceName,
                 result.Duration.TotalSeconds);
 
@@ -116,14 +140,21 @@ public class DockerComposeExecutor(ILogger<DockerComposeExecutor> logger)
         }
         catch (OperationCanceledException)
         {
-            logger.LogWarning("Docker Compose update cancelled for service '{ServiceName}'", serviceName);
+            logger.LogWarning("Docker update cancelled for service '{ServiceName}'", serviceName);
             result.Success = false;
             result.ErrorOutput = "Operation was cancelled";
             throw;
         }
+        catch (DockerApiException ex)
+        {
+            logger.LogError(ex, "Docker API error during update for service '{ServiceName}'", serviceName);
+            result.Success = false;
+            result.ErrorOutput = $"Docker API error: {ex.Message}";
+            return result;
+        }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Unexpected error during Docker Compose update for service '{ServiceName}'", serviceName);
+            logger.LogError(ex, "Unexpected error during Docker update for service '{ServiceName}'", serviceName);
             result.Success = false;
             result.ErrorOutput = $"Unexpected error: {ex.Message}";
             throw;
@@ -136,109 +167,86 @@ public class DockerComposeExecutor(ILogger<DockerComposeExecutor> logger)
     }
 
     /// <summary>
-    /// Executes a process with timeout and cancellation support.
-    /// Implements async/await pattern for responsive execution.
+    /// Finds a container belonging to a specific compose service by matching compose labels.
     /// </summary>
-    private async Task<(int ExitCode, string StdOut, string StdErr)> RunProcessAsync(
-        string command,
-        string arguments,
-        string workingDirectory,
-        TimeSpan timeout,
-        CancellationToken cancellationToken)
+    private async Task<ContainerListResponse?> FindComposeContainerAsync(
+        string composeFilePath, string serviceName, CancellationToken cancellationToken)
     {
-        logger.LogDebug(
-            "Running process: {Command} {Arguments} in directory {WorkingDirectory}",
-            command,
-            arguments,
-            workingDirectory);
-
-        var processStartInfo = new ProcessStartInfo
+        var containers = await dockerClient.Containers.ListContainersAsync(new ContainersListParameters
         {
-            FileName = command,
-            Arguments = arguments,
-            WorkingDirectory = workingDirectory,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
+            All = true,
+            Filters = new Dictionary<string, IDictionary<string, bool>>
+            {
+                ["label"] = new Dictionary<string, bool>
+                {
+                    [$"com.docker.compose.service={serviceName}"] = true
+                }
+            }
+        }, cancellationToken);
+
+        // If multiple containers match the service name, prefer the one from the same compose file
+        return containers
+            .OrderByDescending(c =>
+            {
+                c.Labels.TryGetValue("com.docker.compose.project.config_files", out var configFiles);
+                return configFiles?.Contains(composeFilePath, StringComparison.OrdinalIgnoreCase) == true ? 1 : 0;
+            })
+            .FirstOrDefault();
+    }
+
+    /// <summary>
+    /// Builds the networking config from the inspected container to preserve network attachments.
+    /// </summary>
+    private static NetworkingConfig BuildNetworkingConfig(ContainerInspectResponse inspection)
+    {
+        var config = new NetworkingConfig
+        {
+            EndpointsConfig = new Dictionary<string, EndpointSettings>()
         };
 
-        using var process = new Process { StartInfo = processStartInfo };
-        
-        // StringBuilders for thread-safe output capture
-        var stdOutBuilder = new StringBuilder();
-        var stdErrBuilder = new StringBuilder();
-
-        // Event handlers for async output reading
-        process.OutputDataReceived += (sender, e) =>
+        if (inspection.NetworkSettings?.Networks != null)
         {
-            if (e.Data != null)
+            foreach (var (networkName, network) in inspection.NetworkSettings.Networks)
             {
-                stdOutBuilder.AppendLine(e.Data);
+                config.EndpointsConfig[networkName] = new EndpointSettings
+                {
+                    Aliases = network.Aliases,
+                    IPAMConfig = network.IPAMConfig,
+                    Links = network.Links,
+                    NetworkID = network.NetworkID,
+                    DriverOpts = network.DriverOpts
+                };
             }
-        };
-
-        process.ErrorDataReceived += (sender, e) =>
-        {
-            if (e.Data != null)
-            {
-                stdErrBuilder.AppendLine(e.Data);
-            }
-        };
-
-        // Start the process
-        if (!process.Start())
-        {
-            throw new InvalidOperationException($"Failed to start process: {command}");
         }
 
-        // Begin async reading of output streams
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
+        return config;
+    }
 
-        // Create a combined cancellation token for timeout + external cancellation
-        using var timeoutCts = new CancellationTokenSource(timeout);
-        using var combinedCts = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken, 
-            timeoutCts.Token);
-
-        try
+    /// <summary>
+    /// Extracts the image name (without tag) from a full image reference.
+    /// </summary>
+    private static string GetImageName(string image)
+    {
+        var lastColon = image.LastIndexOf(':');
+        // Check it's not part of a registry port (e.g., registry:5000/image)
+        if (lastColon > 0 && !image[lastColon..].Contains('/'))
         {
-            // Wait for process to exit with cancellation support
-            await process.WaitForExitAsync(combinedCts.Token);
+            return image[..lastColon];
         }
-        catch (OperationCanceledException)
+        return image;
+    }
+
+    /// <summary>
+    /// Extracts the tag from a full image reference, defaulting to "latest".
+    /// </summary>
+    private static string GetImageTag(string image)
+    {
+        var lastColon = image.LastIndexOf(':');
+        if (lastColon > 0 && !image[lastColon..].Contains('/'))
         {
-            // Timeout or cancellation occurred - kill the process
-            logger.LogWarning(
-                "Process {Command} timed out or was cancelled. Killing process.",
-                command);
-
-            try
-            {
-                process.Kill(entireProcessTree: true);
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Failed to kill timed-out process {Command}", command);
-            }
-
-            throw;
+            return image[(lastColon + 1)..];
         }
-
-        // Wait for async readers to complete
-        await Task.Delay(100, CancellationToken.None); // Small delay to ensure output is fully captured
-
-        var exitCode = process.ExitCode;
-        var stdOut = stdOutBuilder.ToString();
-        var stdErr = stdErrBuilder.ToString();
-
-        logger.LogDebug(
-            "Process {Command} exited with code {ExitCode}",
-            command,
-            exitCode);
-
-        return (exitCode, stdOut, stdErr);
+        return "latest";
     }
 }
 
@@ -254,17 +262,17 @@ public class ComposeExecutionResult
     public bool Success { get; set; }
 
     /// <summary>
-    /// Standard output from the docker compose pull command.
+    /// Output from the image pull operation.
     /// </summary>
     public string PullOutput { get; set; } = "";
 
     /// <summary>
-    /// Standard output from the docker compose up command.
+    /// Output from the container recreate/start operation.
     /// </summary>
     public string UpOutput { get; set; } = "";
 
     /// <summary>
-    /// Combined error output from both commands.
+    /// Error output from failed operations.
     /// </summary>
     public string ErrorOutput { get; set; } = "";
 

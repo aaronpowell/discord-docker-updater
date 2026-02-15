@@ -1,5 +1,5 @@
-using System.Diagnostics;
-using System.Text.Json;
+using Docker.DotNet;
+using Docker.DotNet.Models;
 
 namespace DiscordDockerUpdater.Services;
 
@@ -10,8 +10,9 @@ public record ContainerComposeInfo(string WorkingDir, string ConfigFile, string 
 
 /// <summary>
 /// Inspects running containers via the Docker socket to discover their Compose project details.
+/// Uses Docker.DotNet SDK instead of shelling out to the Docker CLI.
 /// </summary>
-public class ContainerInspector(ILogger<ContainerInspector> logger)
+public class ContainerInspector(IDockerClient dockerClient, ILogger<ContainerInspector> logger)
 {
     /// <summary>
     /// Inspects a container by name to extract its Docker Compose labels.
@@ -26,30 +27,9 @@ public class ContainerInspector(ILogger<ContainerInspector> logger)
 
         try
         {
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = "docker",
-                Arguments = $"inspect --format \"{{{{json .Config.Labels}}}}\" {containerName}",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
+            var inspection = await dockerClient.Containers.InspectContainerAsync(containerName, cancellationToken);
 
-            using var process = Process.Start(startInfo);
-            if (process is null)
-                return null;
-
-            var stdout = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-            await process.WaitForExitAsync(cancellationToken);
-
-            if (process.ExitCode != 0)
-            {
-                logger.LogWarning("docker inspect failed for container {ContainerName} (exit code {ExitCode})", containerName, process.ExitCode);
-                return null;
-            }
-
-            var labels = JsonSerializer.Deserialize<Dictionary<string, string>>(stdout.Trim());
+            var labels = inspection.Config?.Labels;
             if (labels is null)
                 return null;
 
@@ -74,6 +54,11 @@ public class ContainerInspector(ILogger<ContainerInspector> logger)
                 containerName, info.ProjectName, info.ServiceName, info.ConfigFile);
 
             return info;
+        }
+        catch (DockerContainerNotFoundException)
+        {
+            logger.LogWarning("Container {ContainerName} not found", containerName);
+            return null;
         }
         catch (Exception ex)
         {

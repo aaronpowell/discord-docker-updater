@@ -4,7 +4,9 @@ using Discord.WebSocket;
 using DiscordDockerUpdater.Configuration;
 using DiscordDockerUpdater.Models;
 using DiscordDockerUpdater.Services;
+using Docker.DotNet;
 using Microsoft.Extensions.Options;
+using System.Runtime.InteropServices;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -13,6 +15,15 @@ builder.Configuration.AddUserSecrets<Program>(optional: true);
 // Configure strongly-typed settings
 builder.Services.Configure<BotConfiguration>(
     builder.Configuration.GetSection(BotConfiguration.SectionName));
+
+// Register Docker client (communicates via socket, no CLI needed)
+builder.Services.AddSingleton<IDockerClient>(_ =>
+{
+    Uri dockerUri = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+        ? new Uri("npipe://./pipe/docker_engine")
+        : new Uri("unix:///var/run/docker.sock");
+    return new DockerClientConfiguration(dockerUri).CreateClient();
+});
 
 // Register services
 builder.Services.AddSingleton<UpdateTracker>();
