@@ -30,6 +30,7 @@ builder.Services.AddSingleton<UpdateTracker>();
 builder.Services.AddSingleton<ContainerInspector>();
 builder.Services.AddSingleton<DiscordNotificationService>();
 builder.Services.AddSingleton<DockerComposeExecutor>();
+builder.Services.AddSingleton<ComposeFileUpdater>();
 
 // Register Discord services
 builder.Services.AddSingleton(new DiscordSocketConfig { GatewayIntents = GatewayIntents.Guilds | GatewayIntents.GuildMessages });

@@ -8,7 +8,8 @@ public class UpdateModule(
     ILogger<UpdateModule> logger,
     UpdateTracker updateTracker,
     ContainerInspector containerInspector,
-    DockerComposeExecutor composeExecutor) : InteractionModuleBase<SocketInteractionContext>
+    DockerComposeExecutor composeExecutor,
+    ComposeFileUpdater composeFileUpdater) : InteractionModuleBase<SocketInteractionContext>
 {
 
     [SlashCommand("list-updates", "Lists all pending container updates")]
@@ -160,8 +161,17 @@ public class UpdateModule(
             // Mark as completed in tracker
             updateTracker.MarkCompleted(update.Id);
 
+            // Update compose file source if enabled
+            var sourceUpdated = false;
+            if (!string.IsNullOrWhiteSpace(update.Payload.Digest))
+            {
+                var pinnedImage = ComposeFileUpdater.BuildImageWithDigest(imageName, update.Payload.Digest);
+                sourceUpdated = await composeFileUpdater.UpdateImageReferenceAsync(
+                    composeInfo.ConfigFile, serviceName, pinnedImage);
+            }
+
             // Build success embed
-            var successEmbed = new EmbedBuilder()
+            var successEmbedBuilder = new EmbedBuilder()
                 .WithTitle("✅ Updated Successfully")
                 .WithDescription($"Container **{containerName}** has been updated")
                 .WithColor(0x00FF00) // Green
@@ -169,7 +179,14 @@ public class UpdateModule(
                 .AddField("Service", serviceName, inline: true)
                 .AddField("Project", composeInfo.ProjectName, inline: true)
                 .AddField("Triggered By", Context.User.Mention, inline: true)
-                .AddField("Duration", $"{result.Duration.TotalSeconds:F2}s", inline: true)
+                .AddField("Duration", $"{result.Duration.TotalSeconds:F2}s", inline: true);
+
+            if (sourceUpdated)
+            {
+                successEmbedBuilder.AddField("Source Updated", $"✅ `{Path.GetFileName(composeInfo.ConfigFile)}`", inline: true);
+            }
+
+            var successEmbed = successEmbedBuilder
                 .WithTimestamp(DateTimeOffset.UtcNow)
                 .WithFooter($"Update ID: {update.Id}")
                 .Build();

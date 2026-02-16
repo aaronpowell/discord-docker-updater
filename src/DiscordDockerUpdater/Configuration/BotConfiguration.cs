@@ -26,4 +26,11 @@ public class BotConfiguration
     /// If empty/null, webhook authentication is disabled (not recommended for production).
     /// </summary>
     public string? WebhookToken { get; set; }
+
+    /// <summary>
+    /// When true, after a successful container update the compose file's image reference
+    /// is updated to pin to the new digest, keeping the source file in sync with what's running.
+    /// Default is false.
+    /// </summary>
+    public bool UpdateSource { get; set; }
 }

@@ -16,6 +16,7 @@ public class DiscordBotService(
     UpdateTracker updateTracker,
     ContainerInspector containerInspector,
     DockerComposeExecutor composeExecutor,
+    ComposeFileUpdater composeFileUpdater,
     DiscordNotificationService notificationService) : IHostedService
 {
     private readonly BotConfiguration _config = config.Value;
@@ -359,6 +360,15 @@ public class DiscordBotService(
             // Mark as completed in tracker
             updateTracker.MarkCompleted(update.Id);
 
+            // Update compose file source if enabled
+            var sourceUpdated = false;
+            if (!string.IsNullOrWhiteSpace(update.Payload.Digest))
+            {
+                var pinnedImage = ComposeFileUpdater.BuildImageWithDigest(imageName, update.Payload.Digest);
+                sourceUpdated = await composeFileUpdater.UpdateImageReferenceAsync(
+                    composeInfo.ConfigFile, serviceName, pinnedImage);
+            }
+
             // Build success embed for the original message
             var successEmbed = new EmbedBuilder()
                 .WithTitle("✅ Updated Successfully")
@@ -368,7 +378,14 @@ public class DiscordBotService(
                 .AddField("Service", serviceName, inline: true)
                 .AddField("Project", composeInfo.ProjectName, inline: true)
                 .AddField("Triggered By", component.User.Mention, inline: true)
-                .AddField("Duration", $"{result.Duration.TotalSeconds:F2}s", inline: true)
+                .AddField("Duration", $"{result.Duration.TotalSeconds:F2}s", inline: true);
+
+            if (sourceUpdated)
+            {
+                successEmbed.AddField("Source Updated", $"✅ `{Path.GetFileName(composeInfo.ConfigFile)}`", inline: true);
+            }
+
+            var builtSuccessEmbed = successEmbed
                 .WithTimestamp(DateTimeOffset.UtcNow)
                 .WithFooter($"Update ID: {update.Id}")
                 .Build();
@@ -384,7 +401,7 @@ public class DiscordBotService(
             {
                 await component.ModifyOriginalResponseAsync(msg =>
                 {
-                    msg.Embed = successEmbed;
+                    msg.Embed = builtSuccessEmbed;
                     msg.Components = disabledComponents;
                 });
             }

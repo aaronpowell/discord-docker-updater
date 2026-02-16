@@ -130,6 +130,7 @@ All settings live under the `Bot` section and can be set via environment variabl
 | `DiscordToken` | `Bot__DiscordToken` | Discord bot token (required) | — |
 | `ChannelId` | `Bot__ChannelId` | Discord channel ID for notifications (required) | — |
 | `WebhookToken` | `Bot__WebhookToken` | Token for webhook authentication (recommended) | — |
+| `UpdateSource` | `Bot__UpdateSource` | Update compose file image reference to pinned digest after successful update | `false` |
 | `LogoUrl` | `Bot__LogoUrl` | Optional URL to logo image for Discord embeds | — |
 | `StaleUpdateRetentionDays` | `Bot__StaleUpdateRetentionDays` | Days to keep pending updates before cleanup | `7` |
 
