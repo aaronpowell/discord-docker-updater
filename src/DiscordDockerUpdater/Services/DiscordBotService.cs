@@ -140,7 +140,8 @@ public class DiscordBotService(
 
     /// <summary>
     /// Handles button interactions from Discord message components.
-    /// Implements async/await pattern for responsive user experience.
+    /// Defers and disables buttons immediately, then offloads long-running work
+    /// to a background task so the gateway thread is never blocked.
     /// </summary>
     private async Task HandleButtonAsync(SocketMessageComponent component)
     {
@@ -211,7 +212,8 @@ public class DiscordBotService(
 
     /// <summary>
     /// Handles the "Update" button press.
-    /// Executes docker compose pull and up commands, updating the Discord message with results.
+    /// Immediately defers the interaction and disables buttons to prevent duplicate clicks,
+    /// then offloads the Docker update to a background task to avoid blocking the gateway.
     /// </summary>
     private async Task HandleUpdateButtonAsync(SocketMessageComponent component, PendingUpdate update)
     {
@@ -242,6 +244,56 @@ public class DiscordBotService(
             containerName,
             component.User.Username);
 
+        // Disable buttons immediately so the user can't click again
+        var inProgressComponents = new ComponentBuilder()
+            .WithButton("⏳ Updating...", customId: "disabled_update", style: ButtonStyle.Primary, disabled: true)
+            .WithButton("❌ Dismiss", customId: "disabled_dismiss", style: ButtonStyle.Secondary, disabled: true)
+            .Build();
+
+        var inProgressEmbed = new EmbedBuilder()
+            .WithTitle("⏳ Update In Progress")
+            .WithDescription($"Updating **{containerName}** — this may take a few minutes...")
+            .WithColor(0xFFA500) // Orange
+            .AddField("Image", imageName, inline: false)
+            .AddField("Triggered By", component.User.Mention, inline: true)
+            .WithTimestamp(DateTimeOffset.UtcNow)
+            .WithFooter($"Update ID: {update.Id}")
+            .Build();
+
+        try
+        {
+            await component.ModifyOriginalResponseAsync(msg =>
+            {
+                msg.Embed = inProgressEmbed;
+                msg.Components = inProgressComponents;
+            });
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to update message to in-progress state for {UpdateId}", update.Id);
+        }
+
+        // Offload the long-running Docker work to a background task so we don't block the gateway
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ExecuteUpdateAsync(component, update, imageName, containerName);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Background update task failed for {UpdateId}", update.Id);
+            }
+        });
+    }
+
+    /// <summary>
+    /// Executes the actual Docker update work on a background thread.
+    /// </summary>
+    private async Task ExecuteUpdateAsync(
+        SocketMessageComponent component, PendingUpdate update,
+        string imageName, string containerName)
+    {
         // Resolve the compose project via docker inspect
         var composeInfo = await containerInspector.InspectAsync(containerName);
 
