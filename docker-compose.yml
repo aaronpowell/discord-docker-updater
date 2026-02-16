@@ -12,6 +12,7 @@ services:
     environment:
       - Bot__DiscordToken=${DISCORD_TOKEN}
       - Bot__ChannelId=${DISCORD_CHANNEL_ID}
+      - Bot__WebhookToken=${WEBHOOK_TOKEN}
       # - Bot__LogoUrl=https://raw.githubusercontent.com/yourusername/discord-docker-updater/main/assets/logo.png
 
   diun:
@@ -31,6 +32,7 @@ services:
       - "DIUN_NOTIF_WEBHOOK_ENDPOINT=http://discord-docker-updater:8080/webhook/diun"
       - "DIUN_NOTIF_WEBHOOK_METHOD=POST"
       - "DIUN_NOTIF_WEBHOOK_HEADERS_Content-Type=application/json"
+      - "DIUN_NOTIF_WEBHOOK_HEADERS_Authorization=Bearer ${WEBHOOK_TOKEN}"
       - "DIUN_NOTIF_WEBHOOK_TIMEOUT=10s"
       - "DIUN_DEFAULTS_INCLUDETAGS=latest,nightly"
     labels:

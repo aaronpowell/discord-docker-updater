@@ -68,6 +68,7 @@ Create a `.env` file in the repository root:
 ```env
 DISCORD_TOKEN=your_discord_bot_token_here
 DISCORD_CHANNEL_ID=your_discord_channel_id_here
+WEBHOOK_TOKEN=your_webhook_token_here
 ```
 
 > **Note:** The bot token is passed via the `Bot__DiscordToken` environment variable. Never commit tokens to source control — use `.env` files, Docker secrets, or your orchestrator's secret management.
@@ -128,6 +129,7 @@ All settings live under the `Bot` section and can be set via environment variabl
 |---------|-------------|-------------|---------|
 | `DiscordToken` | `Bot__DiscordToken` | Discord bot token (required) | — |
 | `ChannelId` | `Bot__ChannelId` | Discord channel ID for notifications (required) | — |
+| `WebhookToken` | `Bot__WebhookToken` | Token for webhook authentication (recommended) | — |
 | `LogoUrl` | `Bot__LogoUrl` | Optional URL to logo image for Discord embeds | — |
 | `StaleUpdateRetentionDays` | `Bot__StaleUpdateRetentionDays` | Days to keep pending updates before cleanup | `7` |
 
@@ -165,6 +167,7 @@ notif:
     method: POST
     headers:
       Content-Type: application/json
+      Authorization: Bearer your_webhook_token_here
     timeout: 10s
 
 watch:
@@ -327,6 +330,7 @@ Send a test payload to the webhook endpoint:
 ```bash
 curl -X POST http://localhost:8080/webhook/diun \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your_webhook_token_here" \
   -d '{
     "diun_version": "4.28.0",
     "hostname": "my-server",

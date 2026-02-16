@@ -58,9 +58,23 @@ app.MapGet("/health", (UpdateTracker tracker, DiscordSocketClient client) =>
 .WithName("HealthCheck");
 
 // Webhook endpoint for receiving Diun notifications
-app.MapPost("/webhook/diun", async (DiunPayload payload, UpdateTracker tracker,
-    DiscordNotificationService notifier, ILogger<Program> logger) =>
+app.MapPost("/webhook/diun", async (HttpContext httpContext, DiunPayload payload, UpdateTracker tracker,
+    DiscordNotificationService notifier, IOptions<BotConfiguration> botConfig, ILogger<Program> logger) =>
 {
+    // Validate webhook token if configured
+    var webhookToken = botConfig.Value.WebhookToken;
+    if (!string.IsNullOrWhiteSpace(webhookToken))
+    {
+        var authHeader = httpContext.Request.Headers.Authorization.ToString();
+        if (string.IsNullOrEmpty(authHeader) ||
+            !authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ||
+            authHeader["Bearer ".Length..] != webhookToken)
+        {
+            logger.LogWarning("Webhook request rejected: invalid or missing authorization token");
+            return Results.Unauthorized();
+        }
+    }
+
     // Validate required fields
     if (string.IsNullOrWhiteSpace(payload.Image))
     {
@@ -137,6 +151,14 @@ static void ValidateConfiguration(IServiceProvider services, ILogger logger)
             "Discord channel ID is not configured (Bot:ChannelId). " +
             "The bot will work but cannot post automatic notifications. " +
             "Only slash commands will be available.");
+    }
+
+    if (string.IsNullOrWhiteSpace(config.WebhookToken))
+    {
+        logger.LogWarning(
+            "Webhook token is not configured (Bot:WebhookToken). " +
+            "The /webhook/diun endpoint is open to unauthenticated requests. " +
+            "Set the Bot__WebhookToken environment variable for basic security.");
     }
 
     logger.LogInformation("Configuration validation completed successfully");

@@ -19,4 +19,11 @@ public class BotConfiguration
     /// or empty/null to not use a logo.
     /// </summary>
     public string? LogoUrl { get; set; }
+
+    /// <summary>
+    /// Token required on incoming webhook requests for basic authentication.
+    /// When set, requests must include an Authorization header with "Bearer {token}".
+    /// If empty/null, webhook authentication is disabled (not recommended for production).
+    /// </summary>
+    public string? WebhookToken { get; set; }
 }
