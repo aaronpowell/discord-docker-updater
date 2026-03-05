@@ -3,6 +3,7 @@ using Discord;
 using Discord.Interactions;
 using Discord.WebSocket;
 using DiscordDockerUpdater.Configuration;
+using DiscordDockerUpdater.Models;
 using Microsoft.Extensions.Options;
 
 namespace DiscordDockerUpdater.Services;
@@ -17,7 +18,8 @@ public class DiscordBotService(
     ContainerInspector containerInspector,
     DockerComposeExecutor composeExecutor,
     ComposeFileUpdater composeFileUpdater,
-    DiscordNotificationService notificationService) : IHostedService
+    DiscordNotificationService notificationService,
+    AgentClient agentClient) : IHostedService
 {
     private readonly BotConfiguration _config = config.Value;
 
@@ -298,6 +300,14 @@ public class DiscordBotService(
         // Resolve the compose project via docker inspect
         var composeInfo = await containerInspector.InspectAsync(containerName);
 
+        // Check if this update should be routed to a remote agent
+        var agentUrl = agentClient.ResolveAgentUrl(update.Payload.Hostname);
+        if (agentUrl != null)
+        {
+            await ExecuteRemoteUpdateAsync(component, update, imageName, containerName, agentUrl);
+            return;
+        }
+
         if (composeInfo == null)
         {
             logger.LogWarning(
@@ -375,6 +385,7 @@ public class DiscordBotService(
                 .WithDescription($"Container **{containerName}** has been updated")
                 .WithColor(0x00FF00) // Green
                 .AddField("Image", imageName, inline: false)
+                .AddField("Host", update.Payload.Hostname ?? "local", inline: true)
                 .AddField("Service", serviceName, inline: true)
                 .AddField("Project", composeInfo.ProjectName, inline: true)
                 .AddField("Triggered By", component.User.Mention, inline: true)
@@ -447,6 +458,7 @@ public class DiscordBotService(
                 .WithDescription($"Failed to update **{imageName}**")
                 .WithColor(0xFF0000) // Red
                 .AddField("Container", containerName, inline: true)
+                .AddField("Host", update.Payload.Hostname ?? "local", inline: true)
                 .AddField("Service", serviceName, inline: true)
                 .AddField("Project", composeInfo.ProjectName, inline: true)
                 .AddField("Duration", $"{result.Duration.TotalSeconds:F2}s", inline: true)
@@ -468,6 +480,120 @@ public class DiscordBotService(
                 "Update failed for {UpdateId}. Error: {Error}",
                 update.Id,
                 result.ErrorOutput);
+        }
+    }
+
+    /// <summary>
+    /// Executes an update via a remote agent when the container is on a different host.
+    /// </summary>
+    private async Task ExecuteRemoteUpdateAsync(
+        SocketMessageComponent component, PendingUpdate update,
+        string imageName, string containerName, string agentUrl)
+    {
+        var hostname = update.Payload.Hostname ?? "unknown";
+        logger.LogInformation(
+            "Routing update {UpdateId} for container {Container} to remote agent at {AgentUrl} (host: {Hostname})",
+            update.Id, containerName, agentUrl, hostname);
+
+        try
+        {
+            var request = new AgentUpdateRequest
+            {
+                ContainerName = containerName,
+                ImageName = imageName,
+                Digest = update.Payload.Digest,
+                UpdateId = update.Id
+            };
+
+            var response = await agentClient.SendUpdateAsync(agentUrl, request);
+
+            if (response.Success)
+            {
+                updateTracker.MarkCompleted(update.Id);
+
+                var successEmbed = new EmbedBuilder()
+                    .WithTitle("✅ Updated Successfully")
+                    .WithDescription($"Container **{containerName}** has been updated")
+                    .WithColor(0x00FF00)
+                    .AddField("Image", imageName, inline: false)
+                    .AddField("Host", hostname, inline: true)
+                    .AddField("Service", response.ServiceName ?? "N/A", inline: true)
+                    .AddField("Project", response.ProjectName ?? "N/A", inline: true)
+                    .AddField("Triggered By", component.User.Mention, inline: true)
+                    .AddField("Duration", $"{response.DurationSeconds:F2}s", inline: true);
+
+                if (response.SourceUpdated)
+                {
+                    successEmbed.AddField("Source Updated", $"✅ `{Path.GetFileName(response.ConfigFile ?? "")}`", inline: true);
+                }
+
+                var builtSuccessEmbed = successEmbed
+                    .WithTimestamp(DateTimeOffset.UtcNow)
+                    .WithFooter($"Update ID: {update.Id}")
+                    .Build();
+
+                var disabledComponents = new ComponentBuilder()
+                    .WithButton("🔄 Update", customId: "disabled_update", style: ButtonStyle.Success, disabled: true)
+                    .WithButton("❌ Dismiss", customId: "disabled_dismiss", style: ButtonStyle.Secondary, disabled: true)
+                    .Build();
+
+                await component.ModifyOriginalResponseAsync(msg =>
+                {
+                    msg.Embed = builtSuccessEmbed;
+                    msg.Components = disabledComponents;
+                });
+
+                // Follow up with details
+                var detailsEmbed = new EmbedBuilder()
+                    .WithTitle("📋 Update Details")
+                    .WithColor(0x00FF00)
+                    .WithTimestamp(DateTimeOffset.UtcNow);
+
+                if (!string.IsNullOrWhiteSpace(response.PullOutput))
+                    detailsEmbed.AddField("Pull Output", TruncateForDiscord(response.PullOutput, 1024), inline: false);
+                if (!string.IsNullOrWhiteSpace(response.UpOutput))
+                    detailsEmbed.AddField("Up Output", TruncateForDiscord(response.UpOutput, 1024), inline: false);
+
+                await component.FollowupAsync(embed: detailsEmbed.Build());
+            }
+            else
+            {
+                var failureEmbed = new EmbedBuilder()
+                    .WithTitle("❌ Update Failed")
+                    .WithDescription($"Failed to update **{imageName}** on host **{hostname}**")
+                    .WithColor(0xFF0000)
+                    .AddField("Container", containerName, inline: true)
+                    .AddField("Host", hostname, inline: true)
+                    .AddField("Duration", $"{response.DurationSeconds:F2}s", inline: true)
+                    .WithTimestamp(DateTimeOffset.UtcNow)
+                    .WithFooter($"Update ID: {update.Id}")
+                    .Build();
+
+                var errorEmbed = new EmbedBuilder()
+                    .WithTitle("❌ Error Output")
+                    .WithColor(0xFF0000)
+                    .AddField("Error", TruncateForDiscord(response.ErrorOutput ?? "Unknown error", 1024), inline: false)
+                    .WithTimestamp(DateTimeOffset.UtcNow)
+                    .Build();
+
+                await component.FollowupAsync(embeds: new[] { failureEmbed, errorEmbed });
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to route update to remote agent at {AgentUrl}", agentUrl);
+
+            var errorEmbed = new EmbedBuilder()
+                .WithTitle("❌ Agent Unreachable")
+                .WithDescription($"Could not reach agent on host **{hostname}** at `{agentUrl}`")
+                .WithColor(0xFF0000)
+                .AddField("Container", containerName, inline: true)
+                .AddField("Error", TruncateForDiscord(ex.Message, 1024), inline: false)
+                .WithTimestamp(DateTimeOffset.UtcNow)
+                .WithFooter($"Update ID: {update.Id}")
+                .Build();
+
+            await component.FollowupAsync(embed: errorEmbed);
         }
     }
 
