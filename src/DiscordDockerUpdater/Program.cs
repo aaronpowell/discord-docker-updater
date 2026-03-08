@@ -25,19 +25,32 @@ builder.Services.AddSingleton<IDockerClient>(_ =>
     return new DockerClientConfiguration(dockerUri).CreateClient();
 });
 
-// Register services
-builder.Services.AddSingleton<UpdateTracker>();
-builder.Services.AddSingleton<ContainerInspector>();
-builder.Services.AddSingleton<DiscordNotificationService>();
-builder.Services.AddSingleton<DockerComposeExecutor>();
-builder.Services.AddSingleton<ComposeFileUpdater>();
+var botConfig = builder.Configuration.GetSection(BotConfiguration.SectionName).Get<BotConfiguration>();
 
-// Register Discord services
-builder.Services.AddSingleton(new DiscordSocketConfig { GatewayIntents = GatewayIntents.Guilds | GatewayIntents.GuildMessages });
-builder.Services.AddSingleton<DiscordSocketClient>();
-builder.Services.AddSingleton(x => new InteractionService(x.GetRequiredService<DiscordSocketClient>()));
-builder.Services.AddHostedService<DiscordBotService>();
-builder.Services.AddHostedService<StaleUpdateCleanupService>();
+if (botConfig?.AgentMode == true)
+{
+    // Agent mode — just the Docker services, no Discord
+    builder.Services.AddSingleton<ContainerInspector>();
+    builder.Services.AddSingleton<DockerComposeExecutor>();
+    builder.Services.AddSingleton<ComposeFileUpdater>();
+}
+else
+{
+    // Bot mode — full Discord + Docker services
+    builder.Services.AddSingleton<UpdateTracker>();
+    builder.Services.AddSingleton<ContainerInspector>();
+    builder.Services.AddSingleton<DiscordNotificationService>();
+    builder.Services.AddSingleton<DockerComposeExecutor>();
+    builder.Services.AddSingleton<ComposeFileUpdater>();
+    builder.Services.AddHttpClient<AgentClient>();
+
+    // Discord services
+    builder.Services.AddSingleton(new DiscordSocketConfig { GatewayIntents = GatewayIntents.Guilds | GatewayIntents.GuildMessages });
+    builder.Services.AddSingleton<DiscordSocketClient>();
+    builder.Services.AddSingleton(x => new InteractionService(x.GetRequiredService<DiscordSocketClient>()));
+    builder.Services.AddHostedService<DiscordBotService>();
+    builder.Services.AddHostedService<StaleUpdateCleanupService>();
+}
 
 var app = builder.Build();
 
@@ -45,16 +58,22 @@ var app = builder.Build();
 ValidateConfiguration(app.Services, app.Logger);
 
 // Health check endpoint
-app.MapGet("/health", (UpdateTracker tracker, DiscordSocketClient client) =>
+app.MapGet("/health", (IServiceProvider sp, IOptions<BotConfiguration> cfg) =>
 {
-    var status = new
+    if (cfg.Value.AgentMode)
+    {
+        return Results.Ok(new { status = "healthy", mode = "agent" });
+    }
+
+    var tracker = sp.GetRequiredService<UpdateTracker>();
+    var client = sp.GetRequiredService<DiscordSocketClient>();
+    return Results.Ok(new
     {
         status = "healthy",
+        mode = "bot",
         discord = client.ConnectionState == ConnectionState.Connected ? "connected" : "disconnected",
         pendingUpdates = tracker.GetPendingCount()
-    };
-
-    return Results.Ok(status);
+    });
 })
 .WithName("HealthCheck");
 
@@ -125,6 +144,81 @@ app.MapPost("/webhook/diun", async (HttpContext httpContext, DiunPayload payload
 })
 .WithName("DiunWebhook");
 
+// Agent update endpoint — receives commands from the central bot
+app.MapPost("/agent/update", async (HttpContext httpContext, AgentUpdateRequest request,
+    ContainerInspector inspector, DockerComposeExecutor executor, ComposeFileUpdater updater,
+    IOptions<BotConfiguration> botCfg, ILogger<Program> agentLogger) =>
+{
+    // Validate agent token
+    var agentToken = botCfg.Value.AgentToken;
+    if (!string.IsNullOrWhiteSpace(agentToken))
+    {
+        var authHeader = httpContext.Request.Headers.Authorization.ToString();
+        if (string.IsNullOrEmpty(authHeader) ||
+            !authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ||
+            authHeader["Bearer ".Length..] != agentToken)
+        {
+            agentLogger.LogWarning("Agent update request rejected: invalid or missing authorization token");
+            return Results.Unauthorized();
+        }
+    }
+
+    if (string.IsNullOrWhiteSpace(request.ContainerName))
+    {
+        return Results.BadRequest(new { error = "ContainerName is required" });
+    }
+
+    agentLogger.LogInformation("Agent received update command for container {Container}", request.ContainerName);
+
+    // Inspect container to find compose info
+    var composeInfo = await inspector.InspectAsync(request.ContainerName);
+    if (composeInfo == null)
+    {
+        return Results.Ok(new AgentUpdateResponse
+        {
+            Success = false,
+            ErrorOutput = $"Could not find compose info for container '{request.ContainerName}'"
+        });
+    }
+
+    // Execute the update
+    try
+    {
+        var result = await executor.UpdateServiceAsync(composeInfo.ConfigFile, composeInfo.ServiceName);
+
+        var sourceUpdated = false;
+        if (result.Success && !string.IsNullOrWhiteSpace(request.Digest) && !string.IsNullOrWhiteSpace(request.ImageName))
+        {
+            var pinnedImage = ComposeFileUpdater.BuildImageWithDigest(request.ImageName, request.Digest);
+            sourceUpdated = await updater.UpdateImageReferenceAsync(
+                composeInfo.ConfigFile, composeInfo.ServiceName, pinnedImage);
+        }
+
+        return Results.Ok(new AgentUpdateResponse
+        {
+            Success = result.Success,
+            PullOutput = result.PullOutput,
+            UpOutput = result.UpOutput,
+            ErrorOutput = result.ErrorOutput,
+            DurationSeconds = result.Duration.TotalSeconds,
+            ServiceName = composeInfo.ServiceName,
+            ProjectName = composeInfo.ProjectName,
+            ConfigFile = composeInfo.ConfigFile,
+            SourceUpdated = sourceUpdated
+        });
+    }
+    catch (Exception ex)
+    {
+        agentLogger.LogError(ex, "Agent update failed for container {Container}", request.ContainerName);
+        return Results.Ok(new AgentUpdateResponse
+        {
+            Success = false,
+            ErrorOutput = $"Exception: {ex.Message}"
+        });
+    }
+})
+.WithName("AgentUpdate");
+
 app.Run();
 
 /// <summary>
@@ -134,6 +228,22 @@ app.Run();
 static void ValidateConfiguration(IServiceProvider services, ILogger logger)
 {
     var config = services.GetRequiredService<IOptions<BotConfiguration>>().Value;
+
+    if (config.AgentMode)
+    {
+        logger.LogInformation("Running in agent mode — Discord bot features are disabled");
+
+        if (string.IsNullOrWhiteSpace(config.AgentToken))
+        {
+            logger.LogWarning(
+                "Agent token is not configured (Bot:AgentToken). " +
+                "The /agent/update endpoint is open to unauthenticated requests. " +
+                "Set the Bot__AgentToken environment variable for basic security.");
+        }
+
+        logger.LogInformation("Configuration validation completed successfully");
+        return;
+    }
 
     // Critical: Discord token must be configured (via environment variable or user secrets, not appsettings.json)
     if (string.IsNullOrWhiteSpace(config.DiscordToken))

@@ -162,6 +162,11 @@ public class DiscordNotificationService(
             builder.AddField("Provider", payload.Provider, inline: true);
         }
 
+        if (!string.IsNullOrWhiteSpace(payload.Hostname))
+        {
+            builder.AddField("Host", payload.Hostname, inline: true);
+        }
+
         return builder.Build();
     }
 
