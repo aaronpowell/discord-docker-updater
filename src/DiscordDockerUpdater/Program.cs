@@ -41,6 +41,7 @@ else
     // Bot mode — full Discord + Docker services + SignalR hub for agents
     builder.Services.AddSignalR();
     builder.Services.AddSingleton<AgentConnectionManager>();
+    builder.Services.AddSingleton<UpdateStore>();
     builder.Services.AddSingleton<UpdateTracker>();
     builder.Services.AddSingleton<ContainerInspector>();
     builder.Services.AddSingleton<DiscordNotificationService>();
