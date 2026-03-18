@@ -2,6 +2,7 @@ using Discord;
 using Discord.Interactions;
 using Discord.WebSocket;
 using DiscordDockerUpdater.Configuration;
+using DiscordDockerUpdater.Hubs;
 using DiscordDockerUpdater.Models;
 using DiscordDockerUpdater.Services;
 using Docker.DotNet;
@@ -29,20 +30,23 @@ var botConfig = builder.Configuration.GetSection(BotConfiguration.SectionName).G
 
 if (botConfig?.AgentMode == true)
 {
-    // Agent mode — just the Docker services, no Discord
+    // Agent mode — Docker services + SignalR client to connect to the bot's hub
     builder.Services.AddSingleton<ContainerInspector>();
     builder.Services.AddSingleton<DockerComposeExecutor>();
     builder.Services.AddSingleton<ComposeFileUpdater>();
+    builder.Services.AddHostedService<AgentHubClient>();
 }
 else
 {
-    // Bot mode — full Discord + Docker services
+    // Bot mode — full Discord + Docker services + SignalR hub for agents
+    builder.Services.AddSignalR();
+    builder.Services.AddSingleton<AgentConnectionManager>();
     builder.Services.AddSingleton<UpdateTracker>();
     builder.Services.AddSingleton<ContainerInspector>();
     builder.Services.AddSingleton<DiscordNotificationService>();
     builder.Services.AddSingleton<DockerComposeExecutor>();
     builder.Services.AddSingleton<ComposeFileUpdater>();
-    builder.Services.AddHttpClient<AgentClient>();
+    builder.Services.AddSingleton<AgentClient>();
 
     // Discord services
     builder.Services.AddSingleton(new DiscordSocketConfig { GatewayIntents = GatewayIntents.Guilds | GatewayIntents.GuildMessages });
@@ -67,12 +71,18 @@ app.MapGet("/health", (IServiceProvider sp, IOptions<BotConfiguration> cfg) =>
 
     var tracker = sp.GetRequiredService<UpdateTracker>();
     var client = sp.GetRequiredService<DiscordSocketClient>();
+    var agents = sp.GetRequiredService<AgentConnectionManager>();
+    var connectedAgents = agents.GetConnectedAgents()
+        .Select(a => new { a.Registration.Hostname, a.ConnectedAt })
+        .ToList();
+
     return Results.Ok(new
     {
         status = "healthy",
         mode = "bot",
         discord = client.ConnectionState == ConnectionState.Connected ? "connected" : "disconnected",
-        pendingUpdates = tracker.GetPendingCount()
+        pendingUpdates = tracker.GetPendingCount(),
+        connectedAgents
     });
 })
 .WithName("HealthCheck");
@@ -144,80 +154,11 @@ app.MapPost("/webhook/diun", async (HttpContext httpContext, DiunPayload payload
 })
 .WithName("DiunWebhook");
 
-// Agent update endpoint — receives commands from the central bot
-app.MapPost("/agent/update", async (HttpContext httpContext, AgentUpdateRequest request,
-    ContainerInspector inspector, DockerComposeExecutor executor, ComposeFileUpdater updater,
-    IOptions<BotConfiguration> botCfg, ILogger<Program> agentLogger) =>
+// Map SignalR hub for agent connections (bot mode only)
+if (botConfig?.AgentMode != true)
 {
-    // Validate agent token
-    var agentToken = botCfg.Value.AgentToken;
-    if (!string.IsNullOrWhiteSpace(agentToken))
-    {
-        var authHeader = httpContext.Request.Headers.Authorization.ToString();
-        if (string.IsNullOrEmpty(authHeader) ||
-            !authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ||
-            authHeader["Bearer ".Length..] != agentToken)
-        {
-            agentLogger.LogWarning("Agent update request rejected: invalid or missing authorization token");
-            return Results.Unauthorized();
-        }
-    }
-
-    if (string.IsNullOrWhiteSpace(request.ContainerName))
-    {
-        return Results.BadRequest(new { error = "ContainerName is required" });
-    }
-
-    agentLogger.LogInformation("Agent received update command for container {Container}", request.ContainerName);
-
-    // Inspect container to find compose info
-    var composeInfo = await inspector.InspectAsync(request.ContainerName);
-    if (composeInfo == null)
-    {
-        return Results.Ok(new AgentUpdateResponse
-        {
-            Success = false,
-            ErrorOutput = $"Could not find compose info for container '{request.ContainerName}'"
-        });
-    }
-
-    // Execute the update
-    try
-    {
-        var result = await executor.UpdateServiceAsync(composeInfo.ConfigFile, composeInfo.ServiceName);
-
-        var sourceUpdated = false;
-        if (result.Success && !string.IsNullOrWhiteSpace(request.Digest) && !string.IsNullOrWhiteSpace(request.ImageName))
-        {
-            var pinnedImage = ComposeFileUpdater.BuildImageWithDigest(request.ImageName, request.Digest);
-            sourceUpdated = await updater.UpdateImageReferenceAsync(
-                composeInfo.ConfigFile, composeInfo.ServiceName, pinnedImage);
-        }
-
-        return Results.Ok(new AgentUpdateResponse
-        {
-            Success = result.Success,
-            PullOutput = result.PullOutput,
-            UpOutput = result.UpOutput,
-            ErrorOutput = result.ErrorOutput,
-            DurationSeconds = result.Duration.TotalSeconds,
-            ServiceName = composeInfo.ServiceName,
-            ProjectName = composeInfo.ProjectName,
-            ConfigFile = composeInfo.ConfigFile,
-            SourceUpdated = sourceUpdated
-        });
-    }
-    catch (Exception ex)
-    {
-        agentLogger.LogError(ex, "Agent update failed for container {Container}", request.ContainerName);
-        return Results.Ok(new AgentUpdateResponse
-        {
-            Success = false,
-            ErrorOutput = $"Exception: {ex.Message}"
-        });
-    }
-})
-.WithName("AgentUpdate");
+    app.MapHub<AgentHub>("/agent-hub");
+}
 
 app.Run();
 
@@ -233,11 +174,21 @@ static void ValidateConfiguration(IServiceProvider services, ILogger logger)
     {
         logger.LogInformation("Running in agent mode — Discord bot features are disabled");
 
+        if (string.IsNullOrWhiteSpace(config.HubUrl))
+        {
+            logger.LogCritical(
+                "HubUrl is not configured (Bot:HubUrl). " +
+                "The agent cannot connect to the bot. " +
+                "Set the Bot__HubUrl environment variable to the bot's base URL.");
+            throw new InvalidOperationException(
+                "HubUrl is not configured. Agent mode requires a hub URL to connect to.");
+        }
+
         if (string.IsNullOrWhiteSpace(config.AgentToken))
         {
             logger.LogWarning(
                 "Agent token is not configured (Bot:AgentToken). " +
-                "The /agent/update endpoint is open to unauthenticated requests. " +
+                "The agent will connect without authentication. " +
                 "Set the Bot__AgentToken environment variable for basic security.");
         }
 

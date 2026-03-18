@@ -301,10 +301,10 @@ public class DiscordBotService(
         var composeInfo = await containerInspector.InspectAsync(containerName);
 
         // Check if this update should be routed to a remote agent
-        var agentUrl = agentClient.ResolveAgentUrl(update.Payload.Hostname);
-        if (agentUrl != null)
+        var hostname = update.Payload.Hostname;
+        if (agentClient.IsAgentConnected(hostname))
         {
-            await ExecuteRemoteUpdateAsync(component, update, imageName, containerName, agentUrl);
+            await ExecuteRemoteUpdateAsync(component, update, imageName, containerName);
             return;
         }
 
@@ -488,12 +488,12 @@ public class DiscordBotService(
     /// </summary>
     private async Task ExecuteRemoteUpdateAsync(
         SocketMessageComponent component, PendingUpdate update,
-        string imageName, string containerName, string agentUrl)
+        string imageName, string containerName)
     {
         var hostname = update.Payload.Hostname ?? "unknown";
         logger.LogInformation(
-            "Routing update {UpdateId} for container {Container} to remote agent at {AgentUrl} (host: {Hostname})",
-            update.Id, containerName, agentUrl, hostname);
+            "Routing update {UpdateId} for container {Container} to remote agent (host: {Hostname})",
+            update.Id, containerName, hostname);
 
         try
         {
@@ -505,7 +505,7 @@ public class DiscordBotService(
                 UpdateId = update.Id
             };
 
-            var response = await agentClient.SendUpdateAsync(agentUrl, request);
+            var response = await agentClient.SendUpdateAsync(hostname, request);
 
             if (response.Success)
             {
@@ -581,11 +581,11 @@ public class DiscordBotService(
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Failed to route update to remote agent at {AgentUrl}", agentUrl);
+            logger.LogError(ex, "Failed to route update to remote agent for host {Hostname}", hostname);
 
             var errorEmbed = new EmbedBuilder()
                 .WithTitle("❌ Agent Unreachable")
-                .WithDescription($"Could not reach agent on host **{hostname}** at `{agentUrl}`")
+                .WithDescription($"Could not reach agent on host **{hostname}**")
                 .WithColor(0xFF0000)
                 .AddField("Container", containerName, inline: true)
                 .AddField("Error", TruncateForDiscord(ex.Message, 1024), inline: false)

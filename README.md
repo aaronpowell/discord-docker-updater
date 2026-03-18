@@ -44,6 +44,7 @@ This bot bridges the gap between Diun's update detection and actual container de
 - 🔒 **Update Tracking**: Prevent duplicate notifications and track update status
 - 🧹 **Stale Cleanup**: Background service removes old pending updates (configurable retention)
 - 📊 **Structured Logging**: Comprehensive logging for debugging and monitoring
+- 🌐 **Multi-Host Agent Mode**: Deploy lightweight agents on remote hosts — agents connect to the bot via SignalR and automatically register for update routing
 
 ## 📋 Prerequisites
 
@@ -134,6 +135,16 @@ All settings live under the `Bot` section and can be set via environment variabl
 | `LogoUrl` | `Bot__LogoUrl` | Optional URL to logo image for Discord embeds | — |
 | `StaleUpdateRetentionDays` | `Bot__StaleUpdateRetentionDays` | Days to keep pending updates before cleanup | `7` |
 
+#### Agent Mode Settings
+
+These settings are for deploying remote agents on additional Docker hosts. See [Agent Mode](#-agent-mode) below.
+
+| Setting | Env Variable | Description | Default |
+|---------|-------------|-------------|---------|
+| `AgentMode` | `Bot__AgentMode` | Enable agent mode (disables Discord features) | `false` |
+| `AgentToken` | `Bot__AgentToken` | Shared token for bot↔agent authentication | — |
+| `HubUrl` | `Bot__HubUrl` | Bot's base URL for agents to connect to (agent mode only) | — |
+
 #### Using the Logo in Discord
 
 The bot can display your logo as a thumbnail in Discord notification embeds. To use it:
@@ -222,6 +233,66 @@ docker compose -f <config_file> up -d <service>
 
 > **Requirement:** The bot container must have the Docker socket mounted (`/var/run/docker.sock`) and the target compose files must be accessible from the host (which they are, since the bot runs compose commands on the host's Docker daemon).
 
+## 🌐 Agent Mode
+
+Agent mode allows you to manage Docker containers across **multiple hosts** from a single Discord bot. Each remote host runs the same application in agent mode — a lightweight process that connects to the bot's SignalR hub and receives update commands.
+
+### How It Works
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ Primary Host                                                  │
+│ ┌──────────────────────────────────────────────────────────┐ │
+│ │ discord-docker-updater (bot mode)                        │ │
+│ │ ├── Discord bot                                          │ │
+│ │ ├── Diun webhook receiver                                │ │
+│ │ ├── SignalR hub (/agent-hub) ◄──── agents connect here   │ │
+│ │ └── Local Docker management                              │ │
+│ └──────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────┘
+           ▲ SignalR              ▲ SignalR
+           │                     │
+┌──────────┴─────────┐ ┌────────┴───────────┐
+│ Remote Host A      │ │ Remote Host B      │
+│ (agent mode)       │ │ (agent mode)       │
+│ Connects to bot,   │ │ Connects to bot,   │
+│ executes updates   │ │ executes updates   │
+│ locally            │ │ locally            │
+└────────────────────┘ └────────────────────┘
+```
+
+Agents **connect to the bot** (not the other way around), so:
+- No static host registry needed — agents self-register on connect
+- No inbound ports required on agent hosts
+- Automatic reconnection if the connection drops
+
+### Deploying an Agent
+
+On each remote Docker host, run the same image in agent mode:
+
+```yaml
+# docker-compose.yml on remote host
+services:
+  discord-docker-updater-agent:
+    image: ghcr.io/aaronpowell/discord-docker-updater:latest
+    container_name: discord-docker-updater-agent
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - Bot__AgentMode=true
+      - Bot__HubUrl=http://your-bot-host:8080
+      - Bot__AgentToken=${AGENT_TOKEN}
+```
+
+On the bot host, set the same `Bot__AgentToken` so the bot validates incoming agent connections.
+
+### Routing Logic
+
+When Diun reports a container update, the payload includes a `hostname` field. The bot checks if a connected agent matches that hostname:
+- **Agent connected for hostname** → route the update command to that agent via SignalR
+- **No agent connected** → execute the update locally via the Docker socket
+
 ## 🏗️ Architecture
 
 ### Technology Stack
@@ -243,7 +314,12 @@ DiscordDockerUpdater.slnx
 │       ├── appsettings.json                  # Configuration template
 │       ├── Configuration/
 │       │   └── BotConfiguration.cs           # Strongly-typed config
+│       ├── Hubs/
+│       │   └── AgentHub.cs                   # SignalR hub for agent connections
 │       ├── Services/
+│       │   ├── AgentClient.cs                # Send commands to connected agents via SignalR
+│       │   ├── AgentConnectionManager.cs     # Track connected agents (hostname → connection)
+│       │   ├── AgentHubClient.cs             # Agent-side SignalR client (BackgroundService)
 │       │   ├── ContainerInspector.cs         # Auto-discover compose info via Docker socket
 │       │   ├── DiscordBotService.cs          # Discord gateway bot (IHostedService)
 │       │   ├── DiscordNotificationService.cs # Message formatting & sending
@@ -251,6 +327,8 @@ DiscordDockerUpdater.slnx
 │       │   ├── StaleUpdateCleanupService.cs  # Background cleanup of old pending updates
 │       │   └── UpdateTracker.cs              # Track update state
 │       ├── Models/
+│       │   ├── AgentRegistration.cs          # Agent registration payload
+│       │   ├── AgentUpdateRequest.cs         # Agent update request/response models
 │       │   └── DiunPayload.cs                # Diun webhook JSON model
 │       └── Modules/
 │           └── UpdateModule.cs               # Discord slash command module
@@ -259,7 +337,11 @@ DiscordDockerUpdater.slnx
 │       ├── DiscordDockerUpdater.Tests.csproj
 │       ├── Models/
 │       │   └── DiunPayloadTests.cs
+│       ├── Hubs/
+│       │   └── AgentHubTests.cs
 │       └── Services/
+│           ├── AgentClientTests.cs
+│           ├── AgentConnectionManagerTests.cs
 │           ├── DockerComposeExecutorTests.cs
 │           └── UpdateTrackerTests.cs
 ├── docker-compose.yml                        # Deployment compose file
