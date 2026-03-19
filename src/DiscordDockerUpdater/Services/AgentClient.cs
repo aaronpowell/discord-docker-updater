@@ -1,58 +1,57 @@
-using System.Net.Http.Json;
-using DiscordDockerUpdater.Configuration;
+using DiscordDockerUpdater.Hubs;
 using DiscordDockerUpdater.Models;
-using Microsoft.Extensions.Options;
+using Microsoft.AspNetCore.SignalR;
 
 namespace DiscordDockerUpdater.Services;
 
 /// <summary>
-/// HTTP client for communicating with remote Discord Docker Updater agents.
-/// Used by the bot to proxy update commands to the correct host.
+/// Communicates with remote agents via SignalR hub.
+/// Agents self-register by connecting to the hub — no static registry needed.
 /// </summary>
-public class AgentClient(HttpClient httpClient, IOptions<BotConfiguration> config, ILogger<AgentClient> logger)
+public class AgentClient(
+    IHubContext<AgentHub> hubContext,
+    AgentConnectionManager connectionManager,
+    ILogger<AgentClient> logger)
 {
-    private readonly BotConfiguration _config = config.Value;
-
     /// <summary>
-    /// Resolves the DIUN hostname to an agent URL from the host registry.
-    /// Returns null if the hostname is not registered or is "local".
+    /// Returns true if a connected agent exists for the given DIUN hostname.
+    /// A null or empty hostname always returns false (treated as local).
     /// </summary>
-    public string? ResolveAgentUrl(string? hostname)
+    public bool IsAgentConnected(string? hostname)
     {
         if (string.IsNullOrWhiteSpace(hostname))
-            return null;
+            return false;
 
-        if (_config.HostRegistry.TryGetValue(hostname, out var url))
-        {
-            if (string.Equals(url, "local", StringComparison.OrdinalIgnoreCase))
-                return null; // Local host — no agent needed
-            return url;
-        }
-
-        // No entry — default to local
-        return null;
+        return connectionManager.IsAgentConnected(hostname);
     }
 
     /// <summary>
-    /// Sends an update command to a remote agent and returns the result.
+    /// Sends an update command to the agent registered for the given hostname
+    /// and waits for the result.
     /// </summary>
-    public async Task<AgentUpdateResponse> SendUpdateAsync(string agentBaseUrl, AgentUpdateRequest request, CancellationToken cancellationToken = default)
+    /// <exception cref="InvalidOperationException">No agent connected for the hostname.</exception>
+    public async Task<AgentUpdateResponse> SendUpdateAsync(string hostname, AgentUpdateRequest request, CancellationToken cancellationToken = default)
     {
-        var url = $"{agentBaseUrl.TrimEnd('/')}/agent/update";
-        logger.LogInformation("Sending update command to agent at {Url} for container {Container}", url, request.ContainerName);
-
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, url);
-        httpRequest.Content = JsonContent.Create(request);
-
-        if (!string.IsNullOrWhiteSpace(_config.AgentToken))
+        if (!connectionManager.TryGetConnectionId(hostname, out var connectionId) || connectionId is null)
         {
-            httpRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _config.AgentToken);
+            throw new InvalidOperationException($"No agent is connected for hostname '{hostname}'.");
         }
 
-        var response = await httpClient.SendAsync(httpRequest, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        logger.LogInformation(
+            "Sending update command to agent {Hostname} (connection {ConnectionId}) for container {Container}",
+            hostname, connectionId, request.ContainerName);
 
-        var result = await response.Content.ReadFromJsonAsync<AgentUpdateResponse>(cancellationToken);
-        return result ?? new AgentUpdateResponse { Success = false, ErrorOutput = "Empty response from agent" };
+        try
+        {
+            var response = await hubContext.Clients.Client(connectionId)
+                .InvokeAsync<AgentUpdateResponse>("ExecuteUpdate", request, cancellationToken);
+
+            return response ?? new AgentUpdateResponse { Success = false, ErrorOutput = "Empty response from agent" };
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogError(ex, "Failed to invoke update on agent {Hostname} (connection {ConnectionId})", hostname, connectionId);
+            throw;
+        }
     }
 }

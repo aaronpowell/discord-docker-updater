@@ -35,22 +35,23 @@ public class BotConfiguration
     public bool UpdateSource { get; set; }
 
     /// <summary>
-    /// When true, runs in agent mode — a lightweight HTTP API that receives update commands
-    /// from the central bot and executes them locally via Docker socket.
+    /// When true, runs in agent mode — connects to the bot's SignalR hub to receive
+    /// update commands and executes them locally via Docker socket.
     /// Discord bot features are disabled in agent mode.
     /// </summary>
     public bool AgentMode { get; set; }
 
     /// <summary>
-    /// Token for authenticating agent API requests (both inbound in agent mode and outbound in bot mode).
+    /// Shared token for authenticating agent connections.
+    /// In bot mode: validates incoming agent hub connections.
+    /// In agent mode: sent as the access token when connecting to the bot's hub.
     /// </summary>
     public string? AgentToken { get; set; }
 
     /// <summary>
-    /// Maps DIUN hostnames to agent URLs for remote update routing.
-    /// Key: hostname as reported by DIUN. Value: agent base URL (e.g., "http://192.168.1.101:8080").
-    /// The special value "local" means the host is the same machine as the bot (use local Docker socket).
-    /// Only used in bot mode.
+    /// Base URL of the bot's SignalR hub. Only used in agent mode.
+    /// Agents connect to {HubUrl}/agent-hub on startup.
+    /// Example: "http://192.168.1.100:8080"
     /// </summary>
-    public Dictionary<string, string> HostRegistry { get; set; } = new();
+    public string? HubUrl { get; set; }
 }

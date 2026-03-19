@@ -1,19 +1,32 @@
 using DiscordDockerUpdater.Models;
 using DiscordDockerUpdater.Services;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Moq;
 
 namespace DiscordDockerUpdater.Tests.Services;
 
-public class UpdateTrackerTests
+public class UpdateTrackerTests : IDisposable
 {
     private readonly UpdateTracker _tracker;
     private readonly Mock<ILogger<UpdateTracker>> _mockLogger;
+    private readonly UpdateStore _store;
+    private readonly string _dbPath;
 
     public UpdateTrackerTests()
     {
         _mockLogger = new Mock<ILogger<UpdateTracker>>();
-        _tracker = new UpdateTracker(_mockLogger.Object);
+        _dbPath = Path.Combine(Path.GetTempPath(), $"test-updates-{Guid.NewGuid()}.db");
+        _store = new UpdateStore(Mock.Of<ILogger<UpdateStore>>(), _dbPath);
+        _tracker = new UpdateTracker(_mockLogger.Object, _store);
+    }
+
+    public void Dispose()
+    {
+        _store.Dispose();
+        SqliteConnection.ClearAllPools();
+        if (File.Exists(_dbPath)) File.Delete(_dbPath);
+        GC.SuppressFinalize(this);
     }
 
     [Fact]
@@ -232,5 +245,48 @@ public class UpdateTrackerTests
 
         // Assert
         Assert.Equal(1000, ids.Count); // All IDs should be unique
+    }
+
+    [Fact]
+    public void GetPendingUpdatesForHost_FiltersCorrectly()
+    {
+        var payload1 = new DiunPayload { Image = "img1:latest", Hostname = "host-a" };
+        var payload2 = new DiunPayload { Image = "img2:latest", Hostname = "host-b" };
+        var payload3 = new DiunPayload { Image = "img3:latest", Hostname = "host-a" };
+
+        _tracker.AddUpdate(payload1);
+        _tracker.AddUpdate(payload2);
+        _tracker.AddUpdate(payload3);
+
+        var hostAUpdates = _tracker.GetPendingUpdatesForHost("host-a").ToList();
+        var hostBUpdates = _tracker.GetPendingUpdatesForHost("host-b").ToList();
+        var unknownUpdates = _tracker.GetPendingUpdatesForHost("unknown").ToList();
+
+        Assert.Equal(2, hostAUpdates.Count);
+        Assert.Single(hostBUpdates);
+        Assert.Empty(unknownUpdates);
+    }
+
+    [Fact]
+    public void GetPendingUpdatesForHost_IsCaseInsensitive()
+    {
+        _tracker.AddUpdate(new DiunPayload { Image = "img:latest", Hostname = "MyHost" });
+
+        Assert.Single(_tracker.GetPendingUpdatesForHost("myhost"));
+        Assert.Single(_tracker.GetPendingUpdatesForHost("MYHOST"));
+    }
+
+    [Fact]
+    public void Updates_PersistAcrossTrackerInstances()
+    {
+        _tracker.AddUpdate(new DiunPayload { Image = "persist:latest", Hostname = "host1" });
+
+        // Create a new tracker pointing at the same store
+        var tracker2 = new UpdateTracker(
+            Mock.Of<ILogger<UpdateTracker>>(), _store);
+
+        var updates = tracker2.GetPendingUpdates().ToList();
+        Assert.Single(updates);
+        Assert.Equal("persist:latest", updates[0].Payload.Image);
     }
 }
