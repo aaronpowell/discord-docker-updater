@@ -3,6 +3,7 @@ using DiscordDockerUpdater.Models;
 using DiscordDockerUpdater.Services;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Options;
+using Microsoft.Net.Http.Headers;
 
 namespace DiscordDockerUpdater.Hubs;
 
@@ -33,11 +34,11 @@ public class AgentHub(
     public override async Task OnConnectedAsync()
     {
         // Validate agent token if configured
-        var agentToken = config.Value.AgentToken;
+        var agentToken = config.Value.AgentToken?.Trim();
         if (!string.IsNullOrWhiteSpace(agentToken))
         {
-            var providedToken = Context.GetHttpContext()?.Request.Query["access_token"].ToString();
-            if (providedToken != agentToken)
+            var providedToken = GetProvidedToken(Context.GetHttpContext());
+            if (!string.Equals(providedToken, agentToken, StringComparison.Ordinal))
             {
                 logger.LogWarning("Agent connection rejected: invalid token from {ConnectionId}", Context.ConnectionId);
                 Context.Abort();
@@ -63,5 +64,25 @@ public class AgentHub(
         }
 
         await base.OnDisconnectedAsync(exception);
+    }
+
+    private static string? GetProvidedToken(HttpContext? httpContext)
+    {
+        if (httpContext is null)
+        {
+            return null;
+        }
+
+        // .NET and Java SignalR clients send bearer tokens via Authorization header.
+        var authHeader = httpContext.Request.Headers[HeaderNames.Authorization].ToString();
+        if (!string.IsNullOrWhiteSpace(authHeader) &&
+            authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+        {
+            return authHeader["Bearer ".Length..].Trim();
+        }
+
+        // Browser clients can only send tokens via query string for WebSockets/SSE.
+        var queryToken = httpContext.Request.Query["access_token"].ToString();
+        return string.IsNullOrWhiteSpace(queryToken) ? null : queryToken.Trim();
     }
 }
