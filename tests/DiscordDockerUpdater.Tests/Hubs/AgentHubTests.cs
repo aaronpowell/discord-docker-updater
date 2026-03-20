@@ -3,6 +3,7 @@ using DiscordDockerUpdater.Hubs;
 using DiscordDockerUpdater.Models;
 using DiscordDockerUpdater.Services;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Connections.Features;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
@@ -153,6 +154,6 @@ public class AgentHubTests
 
     private sealed class TestHttpContextFeature : IHttpContextFeature
     {
-        public HttpContext HttpContext { get; set; } = new DefaultHttpContext();
+        public HttpContext? HttpContext { get; set; } = new DefaultHttpContext();
     }
 }
