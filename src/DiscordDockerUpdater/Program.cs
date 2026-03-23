@@ -7,6 +7,7 @@ using DiscordDockerUpdater.Models;
 using DiscordDockerUpdater.Services;
 using Docker.DotNet;
 using Microsoft.Extensions.Options;
+using System.Net.Http.Json;
 using System.Runtime.InteropServices;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -16,6 +17,9 @@ builder.Configuration.AddUserSecrets<Program>(optional: true);
 // Configure strongly-typed settings
 builder.Services.Configure<BotConfiguration>(
     builder.Configuration.GetSection(BotConfiguration.SectionName));
+
+// Used by agent mode to forward local Diun webhooks to the bot host.
+builder.Services.AddHttpClient();
 
 // Register Docker client (communicates via socket, no CLI needed)
 builder.Services.AddSingleton<IDockerClient>(_ =>
@@ -88,76 +92,181 @@ app.MapGet("/health", (IServiceProvider sp, IOptions<BotConfiguration> cfg) =>
 })
 .WithName("HealthCheck");
 
-// Webhook endpoint for receiving Diun notifications
-app.MapPost("/webhook/diun", async (HttpContext httpContext, DiunPayload payload, UpdateTracker tracker,
-    DiscordNotificationService notifier, IOptions<BotConfiguration> botConfig, ILogger<Program> logger) =>
+// Map webhook endpoint in both modes:
+// - agent mode: receive local Diun webhook and forward to bot host
+// - bot mode: process webhook, track updates, notify Discord
+if (botConfig?.AgentMode == true)
 {
-    // Validate webhook token if configured
-    var webhookToken = botConfig.Value.WebhookToken;
-    if (!string.IsNullOrWhiteSpace(webhookToken))
+    app.MapPost("/webhook/diun", async (HttpContext httpContext, DiunPayload payload,
+        IOptions<BotConfiguration> botConfig, IHttpClientFactory httpClientFactory,
+        ILogger<Program> logger, CancellationToken cancellationToken) =>
     {
-        var authHeader = httpContext.Request.Headers.Authorization.ToString();
-        if (string.IsNullOrEmpty(authHeader) ||
-            !authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ||
-            authHeader["Bearer ".Length..] != webhookToken)
+        // Validate webhook token if configured
+        var webhookToken = botConfig.Value.WebhookToken;
+        if (!string.IsNullOrWhiteSpace(webhookToken))
         {
-            logger.LogWarning("Webhook request rejected: invalid or missing authorization token");
-            return Results.Unauthorized();
+            var authHeader = httpContext.Request.Headers.Authorization.ToString();
+            if (string.IsNullOrEmpty(authHeader) ||
+                !authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ||
+                authHeader["Bearer ".Length..] != webhookToken)
+            {
+                logger.LogWarning("Agent webhook request rejected: invalid or missing authorization token");
+                return Results.Unauthorized();
+            }
         }
-    }
 
-    // Validate required fields
-    if (string.IsNullOrWhiteSpace(payload.Image))
-    {
-        logger.LogWarning("Received webhook with missing or empty Image field");
-        return Results.BadRequest(new { error = "Image field is required" });
-    }
-
-    // Check for duplicate (idempotency)
-    var existingUpdate = tracker.GetByImageAndDigest(payload.Image, payload.Digest);
-    if (existingUpdate != null)
-    {
-        logger.LogInformation(
-            "Duplicate webhook received for image {Image} with digest {Digest}. Existing update ID: {UpdateId}",
-            payload.Image,
-            payload.Digest,
-            existingUpdate.Id);
-
-        return Results.Ok(new
+        // Validate required fields
+        if (string.IsNullOrWhiteSpace(payload.Image))
         {
-            updateId = existingUpdate.Id,
-            receivedAt = existingUpdate.ReceivedAt,
-            duplicate = true
-        });
-    }
+            logger.LogWarning("Received agent webhook with missing or empty Image field");
+            return Results.BadRequest(new { error = "Image field is required" });
+        }
 
-    // Add to tracker
-    var update = tracker.AddUpdate(payload);
+        var hubUrl = botConfig.Value.HubUrl?.Trim();
+        if (string.IsNullOrWhiteSpace(hubUrl) || !Uri.TryCreate(hubUrl, UriKind.Absolute, out var baseUri))
+        {
+            logger.LogError(
+                "Cannot forward Diun webhook in agent mode: invalid HubUrl '{HubUrl}'",
+                botConfig.Value.HubUrl);
 
-    logger.LogInformation(
-        "Received Diun webhook for image {Image} with status {Status}. Update ID: {UpdateId}",
-        payload.Image,
-        payload.Status,
-        update.Id);
+            return Results.Problem(
+                detail: "HubUrl is not configured or invalid. Agent mode requires a valid Bot__HubUrl to forward webhooks.",
+                statusCode: 500);
+        }
 
-    // Post to Discord
-    try
-    {
-        await notifier.NotifyUpdateAvailableAsync(update);
-    }
-    catch (Exception ex)
-    {
-        logger.LogError(ex, "Failed to send Discord notification for update {UpdateId}", update.Id);
-        // Don't fail the webhook - the update is tracked regardless
-    }
+        var normalizedBaseUri = baseUri.AbsoluteUri.EndsWith("/", StringComparison.Ordinal)
+            ? baseUri
+            : new Uri(baseUri.AbsoluteUri + "/");
+        var webhookUri = new Uri(normalizedBaseUri, "webhook/diun");
 
-    return Results.Ok(new { updateId = update.Id, receivedAt = update.ReceivedAt });
-})
-.WithName("DiunWebhook");
+        using var request = new HttpRequestMessage(HttpMethod.Post, webhookUri)
+        {
+            Content = JsonContent.Create(payload)
+        };
 
-// Map SignalR hub for agent connections (bot mode only)
-if (botConfig?.AgentMode != true)
+        var incomingAuthHeader = httpContext.Request.Headers.Authorization.ToString();
+        if (!string.IsNullOrWhiteSpace(incomingAuthHeader))
+        {
+            request.Headers.TryAddWithoutValidation("Authorization", incomingAuthHeader);
+        }
+        else if (!string.IsNullOrWhiteSpace(webhookToken))
+        {
+            request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {webhookToken}");
+        }
+
+        try
+        {
+            var client = httpClientFactory.CreateClient();
+            using var response = await client.SendAsync(request, cancellationToken);
+            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+            var contentType = response.Content.Headers.ContentType?.MediaType ?? "application/json";
+
+            if (!response.IsSuccessStatusCode)
+            {
+                logger.LogWarning(
+                    "Forwarding Diun webhook to {WebhookUrl} failed with status {StatusCode}. Body: {Body}",
+                    webhookUri,
+                    (int)response.StatusCode,
+                    responseBody);
+            }
+            else
+            {
+                logger.LogInformation(
+                    "Forwarded Diun webhook for image {Image} from agent to bot endpoint {WebhookUrl}",
+                    payload.Image,
+                    webhookUri);
+            }
+
+            if (string.IsNullOrWhiteSpace(responseBody))
+            {
+                return Results.StatusCode((int)response.StatusCode);
+            }
+
+            return Results.Content(responseBody, contentType, statusCode: (int)response.StatusCode);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to forward Diun webhook to bot endpoint {WebhookUrl}", webhookUri);
+            return Results.Problem(
+                detail: "Failed to forward webhook to bot host.",
+                statusCode: 502);
+        }
+    })
+    .WithName("DiunWebhook");
+}
+else
 {
+    // Webhook endpoint for receiving Diun notifications
+    app.MapPost("/webhook/diun", async (HttpContext httpContext, DiunPayload payload, UpdateTracker tracker,
+        DiscordNotificationService notifier, IOptions<BotConfiguration> botConfig, ILogger<Program> logger) =>
+    {
+        // Validate webhook token if configured
+        var webhookToken = botConfig.Value.WebhookToken;
+        if (!string.IsNullOrWhiteSpace(webhookToken))
+        {
+            var authHeader = httpContext.Request.Headers.Authorization.ToString();
+            if (string.IsNullOrEmpty(authHeader) ||
+                !authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ||
+                authHeader["Bearer ".Length..] != webhookToken)
+            {
+                logger.LogWarning("Webhook request rejected: invalid or missing authorization token");
+                return Results.Unauthorized();
+            }
+        }
+
+        // Validate required fields
+        if (string.IsNullOrWhiteSpace(payload.Image))
+        {
+            logger.LogWarning("Received webhook with missing or empty Image field");
+            return Results.BadRequest(new { error = "Image field is required" });
+        }
+
+        // Check for duplicate (idempotency)
+        var existingUpdate = tracker.GetByImageAndDigest(payload.Image, payload.Digest);
+        if (existingUpdate != null)
+        {
+            logger.LogInformation(
+                "Duplicate webhook received for image {Image} with digest {Digest}. Existing update ID: {UpdateId}",
+                payload.Image,
+                payload.Digest,
+                existingUpdate.Id);
+
+            return Results.Ok(new
+            {
+                updateId = existingUpdate.Id,
+                receivedAt = existingUpdate.ReceivedAt,
+                duplicate = true
+            });
+        }
+
+        // Add to tracker
+        var update = tracker.AddUpdate(payload);
+
+        logger.LogInformation(
+            "Received Diun webhook for image {Image} with status {Status}. Update ID: {UpdateId}",
+            payload.Image,
+            payload.Status,
+            update.Id);
+
+        // Post to Discord
+        try
+        {
+            await notifier.NotifyUpdateAvailableAsync(update);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to send Discord notification for update {UpdateId}", update.Id);
+            // Don't fail the webhook - the update is tracked regardless
+        }
+
+        return Results.Ok(new { updateId = update.Id, receivedAt = update.ReceivedAt });
+    })
+    .WithName("DiunWebhook");
+
     app.MapHub<AgentHub>("/agent-hub");
 }
 

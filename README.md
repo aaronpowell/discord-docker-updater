@@ -293,6 +293,18 @@ When Diun reports a container update, the payload includes a `hostname` field. T
 - **Agent connected for hostname** → route the update command to that agent via SignalR
 - **No agent connected** → execute the update locally via the Docker socket
 
+### Diun Topologies
+
+You can run Diun in either of these layouts:
+
+- **Centralized Diun**: only the bot host runs Diun, and it sends directly to the bot's `/webhook/diun` endpoint.
+- **Per-host Diun (recommended for isolated hosts)**: each agent host runs its own Diun and sends to the local agent's `/webhook/diun` endpoint. In agent mode, this endpoint forwards the payload to the bot host, preserving the normal Discord notification and update approval flow.
+
+For per-host Diun, make sure:
+
+- `Bot__HubUrl` on each agent points to the bot host.
+- The webhook token strategy is consistent between Diun, agents, and bot (for example, use the same bearer token everywhere).
+
 ## 🏗️ Architecture
 
 ### Technology Stack
