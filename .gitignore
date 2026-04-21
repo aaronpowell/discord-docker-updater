@@ -109,3 +109,4 @@ orleans.codegen.cs
 # Application-specific
 appsettings.*.json
 !appsettings.json
+*.lscache
