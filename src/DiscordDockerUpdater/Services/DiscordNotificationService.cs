@@ -12,7 +12,7 @@ namespace DiscordDockerUpdater.Services;
 public class DiscordNotificationService(
     DiscordSocketClient client,
     IOptions<BotConfiguration> config,
-    AgentConnectionManager agentConnectionManager,
+    AgentConnectionManager connectionManager,
     ILogger<DiscordNotificationService> logger)
 {
     private readonly BotConfiguration _config = config.Value;
@@ -165,7 +165,7 @@ public class DiscordNotificationService(
 
         if (!string.IsNullOrWhiteSpace(payload.Hostname))
         {
-            var displayName = agentConnectionManager.TryFindAgent(payload.Hostname, out var agent)
+            var displayName = connectionManager.TryFindAgent(payload.Hostname, out var agent)
                 ? agent!.Registration.DisplayName
                 : payload.Hostname;
             builder.AddField("Host", displayName, inline: true);

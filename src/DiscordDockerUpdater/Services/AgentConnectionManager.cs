@@ -35,7 +35,7 @@ public class AgentConnectionManager
                 && !string.IsNullOrWhiteSpace(evictedAgent.Registration.FriendlyName))
             {
                 _friendlyNameToHostname.TryRemove(
-                    new KeyValuePair<string, string>(evictedAgent.Registration.FriendlyName, registration.Hostname));
+                    new KeyValuePair<string, string>(evictedAgent.Registration.FriendlyName, evictedAgent.Registration.Hostname));
             }
 
             _logger.LogWarning(
