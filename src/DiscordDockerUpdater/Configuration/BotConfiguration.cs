@@ -49,6 +49,14 @@ public class BotConfiguration
     public string? AgentToken { get; set; }
 
     /// <summary>
+    /// Optional friendly name for this agent instance. When set, this name is shown in Discord
+    /// messages and accepted in command lookups instead of the machine hostname.
+    /// Only applies when running in agent mode.
+    /// Example: "home-server" or "prod-box"
+    /// </summary>
+    public string? FriendlyName { get; set; }
+
+    /// <summary>
     /// Base URL of the bot's SignalR hub. Only used in agent mode.
     /// Agents connect to {HubUrl}/agent-hub on startup.
     /// Example: "http://192.168.1.100:8080"

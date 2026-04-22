@@ -124,6 +124,7 @@ public class AgentHubClient : BackgroundService
         var registration = new AgentRegistration
         {
             Hostname = Environment.MachineName,
+            FriendlyName = _config.FriendlyName,
             OSDescription = RuntimeInformation.OSDescription,
         };
 
@@ -146,7 +147,8 @@ public class AgentHubClient : BackgroundService
         }
 
         await _connection!.InvokeAsync("RegisterAgent", registration, cancellationToken);
-        _logger.LogInformation("Registered as agent with hostname {Hostname}", registration.Hostname);
+        _logger.LogInformation("Registered as agent with hostname {Hostname} (display name: {DisplayName})",
+            registration.Hostname, registration.DisplayName);
     }
 
     /// <summary>

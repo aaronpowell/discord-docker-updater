@@ -11,6 +11,7 @@ public class AgentConnectionManager
 {
     private readonly ConcurrentDictionary<string, ConnectedAgent> _byConnectionId = new();
     private readonly ConcurrentDictionary<string, string> _hostnameToConnectionId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, string> _friendlyNameToHostname = new(StringComparer.OrdinalIgnoreCase);
     private readonly ILogger<AgentConnectionManager> _logger;
 
     public AgentConnectionManager(ILogger<AgentConnectionManager> logger)
@@ -30,7 +31,13 @@ public class AgentConnectionManager
         if (_hostnameToConnectionId.TryGetValue(registration.Hostname, out var oldConnectionId)
             && oldConnectionId != connectionId)
         {
-            _byConnectionId.TryRemove(oldConnectionId, out _);
+            if (_byConnectionId.TryRemove(oldConnectionId, out var evictedAgent)
+                && !string.IsNullOrWhiteSpace(evictedAgent.Registration.FriendlyName))
+            {
+                _friendlyNameToHostname.TryRemove(
+                    new KeyValuePair<string, string>(evictedAgent.Registration.FriendlyName, registration.Hostname));
+            }
+
             _logger.LogWarning(
                 "Evicting previous connection {OldConnectionId} for hostname {Hostname} in favour of {NewConnectionId}",
                 oldConnectionId, registration.Hostname, connectionId);
@@ -39,9 +46,14 @@ public class AgentConnectionManager
         _byConnectionId[connectionId] = agent;
         _hostnameToConnectionId[registration.Hostname] = connectionId;
 
+        if (!string.IsNullOrWhiteSpace(registration.FriendlyName))
+        {
+            _friendlyNameToHostname[registration.FriendlyName] = registration.Hostname;
+        }
+
         _logger.LogInformation(
-            "Agent registered: hostname={Hostname}, connectionId={ConnectionId}, containers={ContainerCount}",
-            registration.Hostname, connectionId, registration.Containers?.Count ?? 0);
+            "Agent registered: hostname={Hostname}, displayName={DisplayName}, connectionId={ConnectionId}, containers={ContainerCount}",
+            registration.Hostname, registration.DisplayName, connectionId, registration.Containers?.Count ?? 0);
     }
 
     /// <summary>
@@ -54,6 +66,13 @@ public class AgentConnectionManager
             // Only remove the hostname mapping if it still points to this connection
             _hostnameToConnectionId.TryRemove(
                 new KeyValuePair<string, string>(agent.Registration.Hostname, connectionId));
+
+            // Remove friendly name mapping if set
+            if (!string.IsNullOrWhiteSpace(agent.Registration.FriendlyName))
+            {
+                _friendlyNameToHostname.TryRemove(
+                    new KeyValuePair<string, string>(agent.Registration.FriendlyName, agent.Registration.Hostname));
+            }
 
             _logger.LogInformation(
                 "Agent unregistered: hostname={Hostname}, connectionId={ConnectionId}",
@@ -76,6 +95,32 @@ public class AgentConnectionManager
     public bool IsAgentConnected(string hostname)
     {
         return _hostnameToConnectionId.ContainsKey(hostname);
+    }
+
+    /// <summary>
+    /// Finds a connected agent by hostname or friendly name (case-insensitive).
+    /// Hostname lookup takes precedence over friendly name.
+    /// Returns false if no matching agent is found.
+    /// </summary>
+    public bool TryFindAgent(string nameOrHostname, out ConnectedAgent? agent)
+    {
+        // Try hostname lookup first
+        if (_hostnameToConnectionId.TryGetValue(nameOrHostname, out var connId)
+            && _byConnectionId.TryGetValue(connId, out agent))
+        {
+            return true;
+        }
+
+        // Try friendly name lookup → hostname → connectionId
+        if (_friendlyNameToHostname.TryGetValue(nameOrHostname, out var hostname)
+            && _hostnameToConnectionId.TryGetValue(hostname, out connId)
+            && _byConnectionId.TryGetValue(connId, out agent))
+        {
+            return true;
+        }
+
+        agent = null;
+        return false;
     }
 
     /// <summary>

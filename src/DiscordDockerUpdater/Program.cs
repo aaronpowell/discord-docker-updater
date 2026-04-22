@@ -78,7 +78,7 @@ app.MapGet("/health", (IServiceProvider sp, IOptions<BotConfiguration> cfg) =>
     var client = sp.GetRequiredService<DiscordSocketClient>();
     var agents = sp.GetRequiredService<AgentConnectionManager>();
     var connectedAgents = agents.GetConnectedAgents()
-        .Select(a => new { a.Registration.Hostname, a.ConnectedAt })
+        .Select(a => new { a.Registration.Hostname, DisplayName = a.Registration.DisplayName, a.ConnectedAt })
         .ToList();
 
     return Results.Ok(new
