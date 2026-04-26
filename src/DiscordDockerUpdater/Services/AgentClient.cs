@@ -32,7 +32,7 @@ public class AgentClient(
     public string GetDisplayNameForHost(string? hostname)
     {
         if (string.IsNullOrWhiteSpace(hostname))
-            return hostname ?? "local";
+            return "local";
 
         return connectionManager.TryFindAgent(hostname, out var agent) && agent is not null
             ? agent.Registration.DisplayName
