@@ -109,6 +109,7 @@ public class DockerComposeExecutor(IDockerClient dockerClient, ILogger<DockerCom
                 Image = currentImage,
                 Name = containerName,
                 Hostname = inspection.Config.Hostname,
+                Domainname = inspection.Config.Domainname,
                 User = inspection.Config.User,
                 Env = inspection.Config.Env,
                 Cmd = inspection.Config.Cmd,
@@ -118,6 +119,20 @@ public class DockerComposeExecutor(IDockerClient dockerClient, ILogger<DockerCom
                 ExposedPorts = inspection.Config.ExposedPorts,
                 Volumes = inspection.Config.Volumes,
                 StopSignal = inspection.Config.StopSignal,
+                // Preserve compose-level healthcheck overrides — without this,
+                // a container that overrides the image's healthcheck (e.g. a longer
+                // start_period) silently reverts to the image default after a
+                // bot-driven update.
+                Healthcheck = inspection.Config.Healthcheck,
+                Tty = inspection.Config.Tty,
+                OpenStdin = inspection.Config.OpenStdin,
+                StdinOnce = inspection.Config.StdinOnce,
+                AttachStdin = inspection.Config.AttachStdin,
+                AttachStdout = inspection.Config.AttachStdout,
+                AttachStderr = inspection.Config.AttachStderr,
+                // Note: top-level MacAddress is deprecated since Docker API 1.44.
+                // Per-network MACs are preserved in BuildNetworkingConfig below.
+                NetworkDisabled = inspection.Config.NetworkDisabled,
                 HostConfig = inspection.HostConfig,
                 NetworkingConfig = BuildNetworkingConfig(inspection)
             }, cancellationToken);
@@ -214,7 +229,10 @@ public class DockerComposeExecutor(IDockerClient dockerClient, ILogger<DockerCom
                     IPAMConfig = network.IPAMConfig,
                     Links = network.Links,
                     NetworkID = network.NetworkID,
-                    DriverOpts = network.DriverOpts
+                    DriverOpts = network.DriverOpts,
+                    // Compose's `networks.<name>.mac_address` lives here, not at
+                    // Config.MacAddress (which is deprecated since API 1.44).
+                    MacAddress = network.MacAddress
                 };
             }
         }
