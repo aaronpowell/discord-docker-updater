@@ -355,6 +355,7 @@ public class DiscordBotService(
                 .WithFooter($"Update ID: {update.Id}")
                 .Build();
 
+            await RestoreActionableButtonsAsync(component, update);
             await component.FollowupAsync(embed: errorEmbed);
             return;
         }
@@ -391,6 +392,7 @@ public class DiscordBotService(
                 .WithFooter($"Update ID: {update.Id}")
                 .Build();
 
+            await RestoreActionableButtonsAsync(component, update);
             await component.FollowupAsync(embed: exceptionEmbed);
             return;
         }
@@ -505,6 +507,7 @@ public class DiscordBotService(
                 .WithTimestamp(DateTimeOffset.UtcNow)
                 .Build();
 
+            await RestoreActionableButtonsAsync(component, update);
             await component.FollowupAsync(embeds: new[] { failureEmbed, errorDetailsEmbed });
 
             logger.LogError(
@@ -607,6 +610,7 @@ public class DiscordBotService(
                     .WithTimestamp(DateTimeOffset.UtcNow)
                     .Build();
 
+                await RestoreActionableButtonsAsync(component, update);
                 await component.FollowupAsync(embeds: new[] { failureEmbed, errorEmbed });
             }
         }
@@ -624,6 +628,7 @@ public class DiscordBotService(
                 .WithFooter($"Update ID: {update.Id}")
                 .Build();
 
+            await RestoreActionableButtonsAsync(component, update);
             await component.FollowupAsync(embed: errorEmbed);
         }
     }
@@ -645,6 +650,48 @@ public class DiscordBotService(
         }
 
         return text[..(maxLength - 3)] + "...";
+    }
+
+    /// <summary>
+    /// On failure, restores the original message's "Update" / "Dismiss" buttons (with the
+    /// real <c>update:&lt;id&gt;</c> / <c>dismiss:&lt;id&gt;</c> custom IDs) so the user can
+    /// retry or clear the notification. Without this, the mid-flight "⏳ Updating..." state
+    /// (set in HandleUpdateButtonAsync) is left in place forever — both buttons stay disabled
+    /// and the message is unrecoverable.
+    /// </summary>
+    private async Task RestoreActionableButtonsAsync(
+        SocketMessageComponent component, PendingUpdate update)
+    {
+        var imageName = update.Payload.Image ?? "unknown";
+        var containerName = update.Payload.Metadata?.CtnNames?.TrimStart('/') ?? "unknown";
+
+        var failedEmbed = new EmbedBuilder()
+            .WithTitle("⚠️ Update Failed — Click Update to retry, or Dismiss to clear")
+            .WithDescription($"The previous update attempt for **{containerName}** failed. See the error details below.")
+            .WithColor(0xFFA500) // Orange — actionable, not terminal
+            .AddField("Image", imageName, inline: false)
+            .AddField("Triggered By", component.User.Mention, inline: true)
+            .WithTimestamp(DateTimeOffset.UtcNow)
+            .WithFooter($"Update ID: {update.Id}")
+            .Build();
+
+        var actionableComponents = new ComponentBuilder()
+            .WithButton(label: "🔄 Update", customId: $"update:{update.Id}", style: ButtonStyle.Primary)
+            .WithButton(label: "❌ Dismiss", customId: $"dismiss:{update.Id}", style: ButtonStyle.Secondary)
+            .Build();
+
+        try
+        {
+            await component.ModifyOriginalResponseAsync(msg =>
+            {
+                msg.Embed = failedEmbed;
+                msg.Components = actionableComponents;
+            });
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to restore actionable buttons after update failure for {UpdateId}", update.Id);
+        }
     }
 
     /// <summary>
