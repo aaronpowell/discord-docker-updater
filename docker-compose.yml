@@ -5,14 +5,21 @@ services:
       dockerfile: src/DiscordDockerUpdater/Dockerfile
     container_name: discord-docker-updater
     restart: unless-stopped
+    # Diun reaches /webhook/diun internally on the compose network, so no
+    # host binding is required by default. Uncomment `ports:` below if you
+    # want host-side access for /health checks from external monitoring or
+    # for out-of-band webhook testing (e.g. `curl localhost:8080/...`).
     expose:
-      - "8080" # diun reaches this internally on the compose network
+      - "8080"
+    # ports:
+    #   - "8080:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # Docker socket for container inspection + compose commands
     environment:
       - Bot__DiscordToken=${DISCORD_TOKEN}
       - Bot__ChannelId=${DISCORD_CHANNEL_ID}
-      - Bot__AllowedUserId=${ALLOWED_USER_ID}
+      # Comma- or semicolon-separated for multi-user setups: "1234,5678"
+      - Bot__AllowedUserIds=${ALLOWED_USER_IDS}
       - Bot__GuildId=${GUILD_ID}
       - Bot__WebhookToken=${WEBHOOK_TOKEN}
       # - Bot__AgentToken=${AGENT_TOKEN}  # Shared token for agent authentication

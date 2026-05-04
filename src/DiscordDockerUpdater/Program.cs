@@ -325,11 +325,12 @@ static void ValidateConfiguration(IServiceProvider services, ILogger logger)
             "Only slash commands will be available.");
     }
 
-    if (config.AllowedUserId == 0)
+    if (string.IsNullOrWhiteSpace(config.AllowedUserIds))
     {
         logger.LogWarning(
-            "Bot:AllowedUserId is not set. ANY user with channel access can press Update buttons " +
-            "or invoke slash commands. Set Bot__AllowedUserId for shared-guild deployments.");
+            "Bot:AllowedUserIds is not set. ANY user with channel access can press Update buttons " +
+            "or invoke slash commands. Set Bot__AllowedUserIds (comma- or semicolon-separated) " +
+            "for shared-guild deployments.");
     }
 
     if (config.GuildId == 0)

@@ -22,6 +22,17 @@ public class DiscordBotService(
     AgentClient agentClient) : IHostedService
 {
     private readonly BotConfiguration _config = config.Value;
+    private readonly HashSet<ulong> _allowedUserIds = ParseUserIdSet(config.Value.AllowedUserIds);
+
+    private static HashSet<ulong> ParseUserIdSet(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return new HashSet<ulong>();
+        return raw
+            .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(s => ulong.TryParse(s, out var id) ? id : 0UL)
+            .Where(id => id != 0)
+            .ToHashSet();
+    }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -712,13 +723,15 @@ public class DiscordBotService(
     }
 
     /// <summary>
-    /// Gates interactions on three IDs: user, channel, guild.
-    /// Each is enforced only when its config value is non-zero, so the bot still
-    /// works in unrestricted mode if no IDs are set (with loud startup warnings).
+    /// Gates interactions on three IDs: user(s), channel, guild.
+    /// Each is enforced only when its config value is non-empty/non-zero, so the
+    /// bot still works in unrestricted mode if no IDs are set (with loud startup
+    /// warnings). Multiple allowed users can be configured via a comma- or
+    /// semicolon-separated string in Bot:AllowedUserIds.
     /// </summary>
     private bool IsAuthorized(SocketInteraction interaction)
     {
-        if (_config.AllowedUserId != 0 && interaction.User.Id != _config.AllowedUserId)
+        if (_allowedUserIds.Count > 0 && !_allowedUserIds.Contains(interaction.User.Id))
         {
             logger.LogWarning(
                 "Rejected interaction from unauthorized user {UserId} ({Username}) in channel {ChannelId}",
@@ -742,13 +755,21 @@ public class DiscordBotService(
         return true;
     }
 
-    private static async Task RespondUnauthorizedAsync(SocketInteraction interaction)
+    private async Task RespondUnauthorizedAsync(SocketInteraction interaction)
     {
         try
         {
             if (!interaction.HasResponded)
                 await interaction.RespondAsync("Not authorized.", ephemeral: true);
         }
-        catch { /* swallow — best-effort response */ }
+        catch (Discord.Net.HttpException ex)
+        {
+            // Interaction token expired, rate-limited, or already-acked — best-effort.
+            logger.LogDebug(ex, "Could not send unauthorized ack to interaction {Id}", interaction.Id);
+        }
+        catch (TimeoutException ex)
+        {
+            logger.LogDebug(ex, "Timed out sending unauthorized ack to interaction {Id}", interaction.Id);
+        }
     }
 }

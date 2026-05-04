@@ -8,10 +8,12 @@ public class BotConfiguration
     public ulong ChannelId { get; set; }
 
     /// <summary>
-    /// Discord user ID allowed to invoke commands and click buttons.
-    /// When 0, no user-level restriction is applied (NOT recommended for shared guilds).
+    /// Discord user IDs allowed to invoke commands and click buttons.
+    /// Comma- or semicolon-separated, e.g. "1234567890,9876543210".
+    /// Whitespace is trimmed; non-numeric entries are ignored.
+    /// When empty/null, no user-level restriction is applied (NOT recommended for shared guilds).
     /// </summary>
-    public ulong AllowedUserId { get; set; }
+    public string? AllowedUserIds { get; set; }
 
     /// <summary>
     /// Discord guild ID where the bot is allowed to operate.
