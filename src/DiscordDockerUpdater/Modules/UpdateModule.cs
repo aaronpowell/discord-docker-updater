@@ -1,6 +1,11 @@
+using System.Text.Json;
 using Discord;
 using Discord.Interactions;
+using DiscordDockerUpdater.Configuration;
 using DiscordDockerUpdater.Services;
+using Docker.DotNet;
+using Docker.DotNet.Models;
+using Microsoft.Extensions.Options;
 
 namespace DiscordDockerUpdater.Modules;
 
@@ -9,8 +14,273 @@ public class UpdateModule(
     UpdateTracker updateTracker,
     ContainerInspector containerInspector,
     DockerComposeExecutor composeExecutor,
-    ComposeFileUpdater composeFileUpdater) : InteractionModuleBase<SocketInteractionContext>
+    ComposeFileUpdater composeFileUpdater,
+    IDockerClient dockerClient,
+    IOptions<BotConfiguration> botConfig) : InteractionModuleBase<SocketInteractionContext>
 {
+
+    [SlashCommand("status", "Show what Diun is actually tracking, plus blind spots and pending updates")]
+    public async Task StatusAsync()
+    {
+        logger.LogInformation("status command invoked by {User}", Context.User.Username);
+        await DeferAsync(ephemeral: true);
+
+        // Query Diun directly for ground truth — what's actually in its DB,
+        // not just what labels suggest. Avoids the "we thought it was watched
+        // but it wasn't" failure mode (auth issues, scan timing, stale state).
+        Dictionary<string, (string Tag, string Digest)> tracked;
+        try
+        {
+            tracked = await GetDiunTrackedImagesAsync();
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to query Diun for tracked images");
+            await FollowupAsync(
+                $"❌ Couldn't query Diun's tracking database: `{ex.Message}`. Is the `diun` container running?",
+                ephemeral: true);
+            return;
+        }
+
+        var containers = await dockerClient.Containers.ListContainersAsync(
+            new ContainersListParameters { All = false });
+
+        var pending = updateTracker.GetPendingUpdates()
+            .Select(u => (u.Payload.Metadata?.CtnNames ?? "").TrimStart('/'))
+            .Where(n => !string.IsNullOrEmpty(n))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var trackedSet = new HashSet<string>(tracked.Keys, StringComparer.OrdinalIgnoreCase);
+        var matchedTracked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var rows = containers
+            .Select(c =>
+            {
+                var name = (c.Names?.FirstOrDefault() ?? c.ID).TrimStart('/');
+                var image = c.Image ?? "";
+                var normalized = NormalizeImageName(image);
+                var optedOut = c.Labels != null
+                    && c.Labels.TryGetValue("diun.enable", out var v)
+                    && string.Equals(v, "false", StringComparison.OrdinalIgnoreCase);
+                var isTracked = !optedOut && trackedSet.Contains(normalized);
+                if (isTracked) matchedTracked.Add(normalized);
+                return (Name: name, Image: image, Normalized: normalized,
+                        OptedOut: optedOut, Tracked: isTracked,
+                        HasPending: pending.Contains(name));
+            })
+            .OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var watched = rows.Where(r => r.Tracked).ToList();
+        var optedOutRows = rows.Where(r => r.OptedOut).ToList();
+        var blindSpots = rows.Where(r => !r.OptedOut && !r.Tracked).ToList();
+        var stale = tracked.Keys.Where(k => !matchedTracked.Contains(k)).ToList();
+        var pendingCount = watched.Count(r => r.HasPending);
+
+        var embed = new EmbedBuilder()
+            .WithTitle("🐳 Diun Tracking Status")
+            .WithColor(new Color(blindSpots.Count > 0 ? 0xFFA500u : 0x00CC00u))
+            .WithDescription(
+                pendingCount > 0
+                    ? $"⏳ **{pendingCount}** pending update(s) — see `/list-updates` for actions."
+                    : "No pending updates.")
+            .WithTimestamp(DateTimeOffset.UtcNow)
+            .WithFooter(
+                $"{watched.Count} watched / {rows.Count} running • {tracked.Count} in Diun's DB");
+
+        // Discord embeds cap at 25 fields and 1024 chars per field value.
+        // Reserve up to 3 fields for the optional sections (blind spots,
+        // opted out, stale) so we never blow the cap and crash with
+        // ArgumentException on Build(). With 5 entries per watched-chunk
+        // field that gives us 22 * 5 = 110 watched containers visible
+        // before we have to truncate — generous for any realistic fleet.
+        const int perChunk = 5;
+        const int maxFields = 25;
+        const int reservedForOtherSections = 3;
+        var maxWatchedShown = (maxFields - reservedForOtherSections) * perChunk;
+        var displayedWatched = watched.Take(maxWatchedShown).ToList();
+        var watchedTruncated = watched.Count - displayedWatched.Count;
+
+        if (watched.Count == 0)
+        {
+            embed.AddField("✅ Watched (0)",
+                "*Diun is not tracking any of the running containers — check Diun's logs and auth config.*",
+                inline: false);
+        }
+        else
+        {
+            for (var i = 0; i < displayedWatched.Count; i += perChunk)
+            {
+                var chunk = displayedWatched.Skip(i).Take(perChunk);
+                var lines = chunk.Select(r =>
+                {
+                    var marker = r.HasPending ? "⏳" : "✅";
+                    var trackedTag = tracked.TryGetValue(r.Normalized, out var t) ? t.Tag : "?";
+                    return $"{marker} `{r.Name}` — `{r.Image}` → tag `{trackedTag}`";
+                });
+                var heading = i == 0
+                    ? (watchedTruncated > 0
+                        ? $"✅ Watched ({watched.Count}, showing first {displayedWatched.Count})"
+                        : $"✅ Watched ({watched.Count})")
+                    : "​";
+                embed.AddField(
+                    name: heading,
+                    value: TruncateForDiscord(string.Join("\n", lines), 1024),
+                    inline: false);
+            }
+        }
+
+        if (blindSpots.Count > 0)
+        {
+            var lines = blindSpots.Select(r => $"❌ `{r.Name}` — `{r.Image}`");
+            embed.AddField(
+                name: $"⚠️ Blind spots ({blindSpots.Count}) — running but NOT in Diun's DB",
+                value: TruncateForDiscord(string.Join("\n", lines), 1024),
+                inline: false);
+        }
+
+        if (optedOutRows.Count > 0)
+        {
+            var names = string.Join(", ", optedOutRows.Select(r => $"`{r.Name}`"));
+            embed.AddField(
+                name: $"➖ Opted out ({optedOutRows.Count}) — `diun.enable=false`",
+                value: TruncateForDiscord(names, 1024),
+                inline: false);
+        }
+
+        if (stale.Count > 0)
+        {
+            var lines = stale.Select(s => $"`{s}` (no matching running container)");
+            embed.AddField(
+                name: $"🗑️ Stale Diun entries ({stale.Count})",
+                value: TruncateForDiscord(string.Join("\n", lines), 1024),
+                inline: false);
+        }
+
+        await FollowupAsync(embed: embed.Build(), ephemeral: true);
+
+        logger.LogInformation(
+            "Reported status to {User}: watched={Watched} blind={Blind} opted_out={OptedOut} stale={Stale} pending={Pending}",
+            Context.User.Username, watched.Count, blindSpots.Count, optedOutRows.Count, stale.Count, pendingCount);
+    }
+
+    /// <summary>
+    /// Queries Diun for its authoritative tracked-images list by exec'ing
+    /// `diun image list --raw` inside the configured Diun container and
+    /// parsing the JSON. Returns a map of full registry-qualified image name
+    /// → (latest tag, digest). Bounded by a 30-second timeout so a hung Diun
+    /// can't block the slash command past Discord's interaction window.
+    /// </summary>
+    private async Task<Dictionary<string, (string Tag, string Digest)>> GetDiunTrackedImagesAsync()
+    {
+        var diunContainer = botConfig.Value.DiunContainerName;
+        if (string.IsNullOrWhiteSpace(diunContainer))
+        {
+            throw new InvalidOperationException(
+                "Bot:DiunContainerName is not configured.");
+        }
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var execResp = await dockerClient.Exec.ExecCreateContainerAsync(diunContainer,
+            new ContainerExecCreateParameters
+            {
+                Cmd = new[] { "diun", "image", "list", "--raw" },
+                AttachStdout = true,
+                AttachStderr = true,
+            }, cts.Token);
+
+        using var stream = await dockerClient.Exec.StartAndAttachContainerExecAsync(execResp.ID, false, cts.Token);
+        string stdout, stderr;
+        try
+        {
+            (stdout, stderr) = await stream.ReadOutputToEndAsync(cts.Token);
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"`diun image list --raw` did not return within 30s — is the `{diunContainer}` container responsive?");
+        }
+
+        if (string.IsNullOrWhiteSpace(stdout))
+        {
+            throw new InvalidOperationException(
+                $"empty output from `diun image list --raw`. stderr: {stderr.Trim()}");
+        }
+
+        using var doc = JsonDocument.Parse(stdout);
+        var result = new Dictionary<string, (string, string)>(StringComparer.OrdinalIgnoreCase);
+
+        // Diun emits `{"images": [...]}` today; fall back to a bare array
+        // if that ever flips, and log a warning so we notice the schema
+        // mismatch instead of silently flooding /status with blind spots.
+        JsonElement imagesEl;
+        if (doc.RootElement.ValueKind == JsonValueKind.Object
+            && doc.RootElement.TryGetProperty("images", out imagesEl))
+        {
+            // happy path
+        }
+        else if (doc.RootElement.ValueKind == JsonValueKind.Array)
+        {
+            imagesEl = doc.RootElement;
+        }
+        else
+        {
+            logger.LogWarning(
+                "`diun image list --raw` returned unexpected JSON shape (root kind={Kind}); /status will show all containers as blind spots until this is investigated",
+                doc.RootElement.ValueKind);
+            return result;
+        }
+
+        foreach (var img in imagesEl.EnumerateArray())
+        {
+            var name = img.TryGetProperty("name", out var nameEl) ? nameEl.GetString() ?? "" : "";
+            if (string.IsNullOrEmpty(name)) continue;
+            var tag = "";
+            var digest = "";
+            if (img.TryGetProperty("latest", out var latestEl))
+            {
+                if (latestEl.TryGetProperty("tag", out var tagEl)) tag = tagEl.GetString() ?? "";
+                if (latestEl.TryGetProperty("digest", out var digestEl)) digest = digestEl.GetString() ?? "";
+            }
+            result[name] = (tag, digest);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Normalizes a Docker image reference to the form Diun stores it in
+    /// (full registry path, no tag/digest). Examples:
+    ///   `crazymax/diun:latest`   → `docker.io/crazymax/diun`
+    ///   `nginx:1.25`             → `docker.io/library/nginx`
+    ///   `ghcr.io/foo/bar:latest` → `ghcr.io/foo/bar`
+    ///   `discord-docker-updater:local` → `docker.io/library/discord-docker-updater`
+    ///     (Diun won't have this — locally-built — so it'll show as a blind
+    ///     spot, which is correct.)
+    /// </summary>
+    private static string NormalizeImageName(string image)
+    {
+        if (string.IsNullOrEmpty(image)) return "";
+        // Strip digest first (everything after @)
+        var atIdx = image.IndexOf('@');
+        if (atIdx > 0) image = image[..atIdx];
+        // Strip tag — last colon, but only if it's *after* the last slash
+        // (so `localhost:5000/foo` keeps its port).
+        var lastSlashIdx = image.LastIndexOf('/');
+        var lastColonIdx = image.LastIndexOf(':');
+        if (lastColonIdx > lastSlashIdx) image = image[..lastColonIdx];
+        // Add docker.io prefix if no registry segment
+        if (!image.Contains('/'))
+        {
+            return $"docker.io/library/{image}";
+        }
+        var firstSegment = image[..image.IndexOf('/')];
+        if (!firstSegment.Contains('.') && !firstSegment.Contains(':') && firstSegment != "localhost")
+        {
+            return $"docker.io/{image}";
+        }
+        return image;
+    }
 
     [SlashCommand("list-updates", "Lists all pending container updates")]
     public async Task ListUpdatesAsync()

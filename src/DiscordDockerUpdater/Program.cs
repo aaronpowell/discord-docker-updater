@@ -267,7 +267,14 @@ else
     })
     .WithName("DiunWebhook");
 
-    app.MapHub<AgentHub>("/agent-hub");
+    // Only expose the /agent-hub endpoint when multi-host mode is enabled.
+    // Single-host deployments don't need the surface area; leaving the hub
+    // unmapped means an attacker can't connect even if they reach the
+    // network endpoint.
+    if (botConfig?.MultiHostMode == true)
+    {
+        app.MapHub<AgentHub>("/agent-hub");
+    }
 }
 
 app.Run();

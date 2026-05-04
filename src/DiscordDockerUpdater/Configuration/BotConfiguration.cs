@@ -56,6 +56,26 @@ public class BotConfiguration
     public bool AgentMode { get; set; }
 
     /// <summary>
+    /// Enables multi-host agent mode for the BOT side. When true (default,
+    /// preserving existing upstream behavior), the bot exposes the
+    /// /agent-hub SignalR endpoint, registers the AgentConnectionManager,
+    /// and surfaces /agents and /agent-info slash commands so a fleet of
+    /// remote Docker hosts can connect as agents and route their updates
+    /// through this bot. Set to false for single-host deployments — the
+    /// hub endpoint isn't mapped and the agent slash commands aren't
+    /// registered.
+    /// </summary>
+    public bool MultiHostMode { get; set; } = true;
+
+    /// <summary>
+    /// Name of the Diun container to query for /status's authoritative
+    /// tracked-images list. Defaults to "diun" but compose projects
+    /// often prefix service names (e.g. "homelab-diun-1") so this is
+    /// configurable.
+    /// </summary>
+    public string DiunContainerName { get; set; } = "diun";
+
+    /// <summary>
     /// Shared token for authenticating agent connections.
     /// In bot mode: validates incoming agent hub connections.
     /// In agent mode: sent as the access token when connecting to the bot's hub.
