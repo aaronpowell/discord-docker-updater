@@ -74,6 +74,17 @@ public class DiscordBotService(
         // Discover and add interaction modules
         await interactionService.AddModulesAsync(Assembly.GetEntryAssembly(), serviceProvider);
 
+        // Hide multi-host agent commands when the feature is disabled.
+        // The corresponding SignalR /agent-hub endpoint isn't mapped either
+        // (see Program.cs), so the whole feature surface is gone — not just
+        // the slash command picker entries.
+        if (!_config.MultiHostMode)
+        {
+            await interactionService.RemoveModuleAsync<DiscordDockerUpdater.Modules.AgentModule>();
+            logger.LogInformation(
+                "Multi-host mode disabled — /agents and /agent-info commands not registered");
+        }
+
         // Register slash commands to a single guild when GuildId is set; otherwise global.
         if (_config.GuildId != 0)
         {
