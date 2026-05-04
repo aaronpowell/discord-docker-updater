@@ -325,6 +325,19 @@ static void ValidateConfiguration(IServiceProvider services, ILogger logger)
             "Only slash commands will be available.");
     }
 
+    if (config.AllowedUserId == 0)
+    {
+        logger.LogWarning(
+            "Bot:AllowedUserId is not set. ANY user with channel access can press Update buttons " +
+            "or invoke slash commands. Set Bot__AllowedUserId for shared-guild deployments.");
+    }
+
+    if (config.GuildId == 0)
+    {
+        logger.LogWarning(
+            "Bot:GuildId is not set. Slash commands register GLOBALLY across every guild the bot joins.");
+    }
+
     if (string.IsNullOrWhiteSpace(config.WebhookToken))
     {
         logger.LogWarning(

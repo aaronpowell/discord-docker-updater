@@ -8,6 +8,18 @@ public class BotConfiguration
     public ulong ChannelId { get; set; }
 
     /// <summary>
+    /// Discord user ID allowed to invoke commands and click buttons.
+    /// When 0, no user-level restriction is applied (NOT recommended for shared guilds).
+    /// </summary>
+    public ulong AllowedUserId { get; set; }
+
+    /// <summary>
+    /// Discord guild ID where the bot is allowed to operate.
+    /// When 0, slash commands are registered globally (NOT recommended for shared guilds).
+    /// </summary>
+    public ulong GuildId { get; set; }
+
+    /// <summary>
     /// Number of days to retain pending updates before cleaning them up.
     /// Default is 7 days. Updates older than this will be removed by the StaleUpdateCleanupService.
     /// </summary>

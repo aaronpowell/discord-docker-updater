@@ -63,10 +63,18 @@ public class DiscordBotService(
         // Discover and add interaction modules
         await interactionService.AddModulesAsync(Assembly.GetEntryAssembly(), serviceProvider);
 
-        // Register commands globally
-        await interactionService.RegisterCommandsGloballyAsync();
-
-        logger.LogInformation("Slash commands registered globally");
+        // Register slash commands to a single guild when GuildId is set; otherwise global.
+        if (_config.GuildId != 0)
+        {
+            await interactionService.RegisterCommandsToGuildAsync(_config.GuildId);
+            logger.LogInformation("Slash commands registered to guild {GuildId}", _config.GuildId);
+        }
+        else
+        {
+            await interactionService.RegisterCommandsGloballyAsync();
+            logger.LogWarning(
+                "Slash commands registered GLOBALLY — set Bot:GuildId to restrict to one guild.");
+        }
 
         // Post a startup message to the configured channel
         if (_config.ChannelId != 0)
@@ -112,6 +120,12 @@ public class DiscordBotService(
             return;
         }
 
+        if (!IsAuthorized(interaction))
+        {
+            await RespondUnauthorizedAsync(interaction);
+            return;
+        }
+
         try
         {
             // Create an execution context
@@ -150,6 +164,12 @@ public class DiscordBotService(
     {
         try
         {
+            if (!IsAuthorized(component))
+            {
+                await RespondUnauthorizedAsync(component);
+                return;
+            }
+
             // Parse the custom ID (format: "action:updateId")
             var parts = component.Data.CustomId.Split(':', 2);
             if (parts.Length != 2)
@@ -689,5 +709,46 @@ public class DiscordBotService(
         logger.Log(logLevel, message.Exception, "[Discord.Net] {Message}", message.Message);
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Gates interactions on three IDs: user, channel, guild.
+    /// Each is enforced only when its config value is non-zero, so the bot still
+    /// works in unrestricted mode if no IDs are set (with loud startup warnings).
+    /// </summary>
+    private bool IsAuthorized(SocketInteraction interaction)
+    {
+        if (_config.AllowedUserId != 0 && interaction.User.Id != _config.AllowedUserId)
+        {
+            logger.LogWarning(
+                "Rejected interaction from unauthorized user {UserId} ({Username}) in channel {ChannelId}",
+                interaction.User.Id, interaction.User.Username, interaction.ChannelId);
+            return false;
+        }
+        if (_config.ChannelId != 0 && interaction.ChannelId != _config.ChannelId)
+        {
+            logger.LogWarning(
+                "Rejected interaction from wrong channel {ChannelId} (user {UserId})",
+                interaction.ChannelId, interaction.User.Id);
+            return false;
+        }
+        if (_config.GuildId != 0 && interaction.GuildId != _config.GuildId)
+        {
+            logger.LogWarning(
+                "Rejected interaction from wrong guild {GuildId} (user {UserId})",
+                interaction.GuildId, interaction.User.Id);
+            return false;
+        }
+        return true;
+    }
+
+    private static async Task RespondUnauthorizedAsync(SocketInteraction interaction)
+    {
+        try
+        {
+            if (!interaction.HasResponded)
+                await interaction.RespondAsync("Not authorized.", ephemeral: true);
+        }
+        catch { /* swallow — best-effort response */ }
     }
 }
