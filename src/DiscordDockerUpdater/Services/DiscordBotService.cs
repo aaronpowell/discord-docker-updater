@@ -723,14 +723,25 @@ public class DiscordBotService(
     }
 
     /// <summary>
-    /// Gates interactions on three IDs: user(s), channel, guild.
-    /// Each is enforced only when its config value is non-empty/non-zero, so the
-    /// bot still works in unrestricted mode if no IDs are set (with loud startup
-    /// warnings). Multiple allowed users can be configured via a comma- or
-    /// semicolon-separated string in Bot:AllowedUserIds.
+    /// Gates interactions on four checks: DM context, user(s), channel, guild.
+    /// Each ID-based check is enforced only when its config value is non-empty/
+    /// non-zero, so the bot still works in unrestricted mode if no IDs are set
+    /// (with loud startup warnings). DMs are always rejected when a GuildId is
+    /// configured, regardless of who sent them — slash commands are guild-scoped
+    /// and the bot never posts buttons outside the configured channel, but this
+    /// is defense-in-depth with a clearer log line than the generic guild check.
+    /// Multiple allowed users can be configured via a comma- or semicolon-
+    /// separated string in Bot:AllowedUserIds.
     /// </summary>
     private bool IsAuthorized(SocketInteraction interaction)
     {
+        if (_config.GuildId != 0 && interaction.GuildId is null)
+        {
+            logger.LogWarning(
+                "Rejected DM interaction from user {UserId} ({Username})",
+                interaction.User.Id, interaction.User.Username);
+            return false;
+        }
         if (_allowedUserIds.Count > 0 && !_allowedUserIds.Contains(interaction.User.Id))
         {
             logger.LogWarning(
