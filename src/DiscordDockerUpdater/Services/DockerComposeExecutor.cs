@@ -130,7 +130,8 @@ public class DockerComposeExecutor(IDockerClient dockerClient, ILogger<DockerCom
                 AttachStdin = inspection.Config.AttachStdin,
                 AttachStdout = inspection.Config.AttachStdout,
                 AttachStderr = inspection.Config.AttachStderr,
-                MacAddress = inspection.Config.MacAddress,
+                // Note: top-level MacAddress is deprecated since Docker API 1.44.
+                // Per-network MACs are preserved in BuildNetworkingConfig below.
                 NetworkDisabled = inspection.Config.NetworkDisabled,
                 HostConfig = inspection.HostConfig,
                 NetworkingConfig = BuildNetworkingConfig(inspection)
@@ -228,7 +229,10 @@ public class DockerComposeExecutor(IDockerClient dockerClient, ILogger<DockerCom
                     IPAMConfig = network.IPAMConfig,
                     Links = network.Links,
                     NetworkID = network.NetworkID,
-                    DriverOpts = network.DriverOpts
+                    DriverOpts = network.DriverOpts,
+                    // Compose's `networks.<name>.mac_address` lives here, not at
+                    // Config.MacAddress (which is deprecated since API 1.44).
+                    MacAddress = network.MacAddress
                 };
             }
         }
