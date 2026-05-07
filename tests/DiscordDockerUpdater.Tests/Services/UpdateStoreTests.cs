@@ -140,6 +140,40 @@ public class UpdateStoreTests : IDisposable
     }
 
     [Fact]
+    public void GetMeta_ReturnsNull_WhenKeyUnset()
+    {
+        Assert.Null(_store.GetMeta("never_set"));
+    }
+
+    [Fact]
+    public void SetMeta_PersistsValue_AndRoundTripsThroughGetMeta()
+    {
+        _store.SetMeta("oneshot_clear_v1", "2026-05-07T10:00:00Z");
+
+        Assert.Equal("2026-05-07T10:00:00Z", _store.GetMeta("oneshot_clear_v1"));
+    }
+
+    [Fact]
+    public void SetMeta_OverwritesExistingValue()
+    {
+        _store.SetMeta("k", "first");
+        _store.SetMeta("k", "second");
+
+        Assert.Equal("second", _store.GetMeta("k"));
+    }
+
+    [Fact]
+    public void Meta_SurvivesReopeningDatabase()
+    {
+        _store.SetMeta("oneshot_clear_v1", "yes");
+        _store.Dispose();
+        SqliteConnection.ClearAllPools();
+
+        using var store2 = new UpdateStore(Mock.Of<ILogger<UpdateStore>>(), _dbPath);
+        Assert.Equal("yes", store2.GetMeta("oneshot_clear_v1"));
+    }
+
+    [Fact]
     public void Persistence_SurvivesReopeningSameDatabase()
     {
         var update = new PendingUpdate

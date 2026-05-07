@@ -15,12 +15,18 @@ public class DiscordBotService(
     IOptions<BotConfiguration> config,
     ILogger<DiscordBotService> logger,
     UpdateTracker updateTracker,
+    UpdateStore updateStore,
     ContainerInspector containerInspector,
     DockerComposeExecutor composeExecutor,
     ComposeFileUpdater composeFileUpdater,
     DiscordNotificationService notificationService,
     AgentClient agentClient) : IHostedService
 {
+    // Bumping the suffix re-runs the cleanup once across all deployments. Don't change
+    // it casually — the only reason to bump is "we want to nuke whatever's still in the
+    // channel from before" and that's a knowingly destructive choice.
+    private const string OneShotCleanupKey = "oneshot_clear_v1";
+
     private readonly BotConfiguration _config = config.Value;
     private readonly HashSet<ulong> _allowedUserIds = ParseUserIdSet(config.Value.AllowedUserIds);
 
@@ -70,6 +76,12 @@ public class DiscordBotService(
 
         // Signal that the client is fully ready (guild/channel cache populated)
         notificationService.SignalReady();
+
+        // One-shot cleanup of pre-existing pending notifications, gated by a meta marker
+        // so it runs once per deployment and *never again* on subsequent restarts. The
+        // marker is checked-then-set before any Discord work to avoid double-clearing
+        // if Ready ever fires twice (e.g. a reconnect during the cleanup itself).
+        await ClearStaleNotificationsOnceAsync();
 
         // Discover and add interaction modules
         await interactionService.AddModulesAsync(Assembly.GetEntryAssembly(), serviceProvider);
@@ -131,6 +143,46 @@ public class DiscordBotService(
             {
                 logger.LogError(ex, "Failed to post startup message to channel {ChannelId}", _config.ChannelId);
             }
+        }
+    }
+
+    /// <summary>
+    /// One-shot cleanup of pending update notifications that survived the upgrade to
+    /// supersede-on-new-update behavior. Without this, the channel would still show the
+    /// pre-upgrade backlog of cards forever (or until each one is dismissed by hand).
+    /// Gated on a meta marker so the cleanup runs exactly once across the lifetime of
+    /// the database — restarts after the marker is set are no-ops.
+    /// </summary>
+    private async Task ClearStaleNotificationsOnceAsync()
+    {
+        if (updateStore.GetMeta(OneShotCleanupKey) is not null)
+        {
+            return;
+        }
+
+        // Set the marker first so a crash partway through still flips us out of cleanup
+        // mode — better to leave a few stale messages than to nuke the whole channel
+        // every restart because the marker never landed.
+        updateStore.SetMeta(OneShotCleanupKey, DateTime.UtcNow.ToString("O"));
+
+        var pending = updateTracker.GetPendingUpdates().ToList();
+        if (pending.Count == 0)
+        {
+            logger.LogInformation("One-shot startup cleanup: no pending updates to clear");
+            return;
+        }
+
+        logger.LogInformation(
+            "One-shot startup cleanup: clearing {Count} pre-existing pending update notification(s)",
+            pending.Count);
+
+        foreach (var update in pending)
+        {
+            if (update.DiscordMessageId.HasValue)
+            {
+                await notificationService.TryDeleteMessageAsync(update.DiscordMessageId.Value);
+            }
+            updateTracker.MarkCompleted(update.Id);
         }
     }
 

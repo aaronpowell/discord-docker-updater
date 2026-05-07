@@ -80,6 +80,55 @@ public class DiscordNotificationService(
     }
 
     /// <summary>
+    /// Attempts to delete a previously-posted notification message in the configured channel.
+    /// Used to supersede stale "update available" cards when a newer one arrives for the same
+    /// image, and during one-shot startup cleanup. Returns false (and logs) on any failure
+    /// instead of throwing — a missing/already-deleted message must not block the new flow.
+    /// </summary>
+    public async Task<bool> TryDeleteMessageAsync(ulong messageId)
+    {
+        if (!_readyTcs.Task.IsCompleted)
+        {
+            logger.LogWarning(
+                "Discord client not ready; skipping delete of message {MessageId}",
+                messageId);
+            return false;
+        }
+
+        if (client.GetChannel(_config.ChannelId) is not IMessageChannel channel)
+        {
+            logger.LogWarning(
+                "Channel {ChannelId} not found; cannot delete message {MessageId}",
+                _config.ChannelId, messageId);
+            return false;
+        }
+
+        try
+        {
+            await channel.DeleteMessageAsync(messageId);
+            logger.LogInformation(
+                "Deleted superseded Discord message {MessageId} from channel {ChannelId}",
+                messageId, _config.ChannelId);
+            return true;
+        }
+        catch (Discord.Net.HttpException ex) when (ex.HttpCode == System.Net.HttpStatusCode.NotFound)
+        {
+            // Message was already removed (manually, or previously deleted) — that's fine.
+            logger.LogInformation(
+                "Message {MessageId} already gone from channel {ChannelId}; nothing to delete",
+                messageId, _config.ChannelId);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Failed to delete Discord message {MessageId} from channel {ChannelId}",
+                messageId, _config.ChannelId);
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Waits for the Discord client to be fully ready (guild/channel cache populated),
     /// not just connected. The Ready event is signaled via <see cref="SignalReady"/>.
     /// </summary>

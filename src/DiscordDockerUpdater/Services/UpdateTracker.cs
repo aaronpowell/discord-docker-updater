@@ -132,9 +132,25 @@ public class UpdateTracker(ILogger<UpdateTracker> logger, UpdateStore store)
             return null;
 
         return _pendingUpdates.Values
-            .FirstOrDefault(u => 
+            .FirstOrDefault(u =>
                 string.Equals(u.Payload.Image, image, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(u.Payload.Digest, digest, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Returns all non-completed updates for the given image (any digest). Used to
+    /// supersede stale notifications when a fresher one arrives so the channel
+    /// doesn't accumulate multiple cards for the same image.
+    /// </summary>
+    public IEnumerable<PendingUpdate> GetPendingByImage(string image)
+    {
+        if (string.IsNullOrWhiteSpace(image))
+            return Array.Empty<PendingUpdate>();
+
+        return _pendingUpdates.Values
+            .Where(u => !u.IsCompleted &&
+                string.Equals(u.Payload.Image, image, StringComparison.OrdinalIgnoreCase))
+            .ToList();
     }
 
     /// <summary>

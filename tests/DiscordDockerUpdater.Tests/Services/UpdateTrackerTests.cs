@@ -277,6 +277,52 @@ public class UpdateTrackerTests : IDisposable
     }
 
     [Fact]
+    public void GetPendingByImage_ReturnsAllNonCompletedForImage_AcrossDigests()
+    {
+        var u1 = _tracker.AddUpdate(new DiunPayload { Image = "nginx:latest", Digest = "sha256:a" });
+        var u2 = _tracker.AddUpdate(new DiunPayload { Image = "nginx:latest", Digest = "sha256:b" });
+        _tracker.AddUpdate(new DiunPayload { Image = "redis:7", Digest = "sha256:c" });
+
+        var matches = _tracker.GetPendingByImage("nginx:latest").ToList();
+
+        Assert.Equal(2, matches.Count);
+        Assert.Contains(matches, u => u.Id == u1.Id);
+        Assert.Contains(matches, u => u.Id == u2.Id);
+    }
+
+    [Fact]
+    public void GetPendingByImage_ExcludesCompleted()
+    {
+        var u1 = _tracker.AddUpdate(new DiunPayload { Image = "nginx:latest", Digest = "sha256:a" });
+        var u2 = _tracker.AddUpdate(new DiunPayload { Image = "nginx:latest", Digest = "sha256:b" });
+        _tracker.MarkCompleted(u1.Id);
+
+        var matches = _tracker.GetPendingByImage("nginx:latest").ToList();
+
+        Assert.Single(matches);
+        Assert.Equal(u2.Id, matches[0].Id);
+    }
+
+    [Fact]
+    public void GetPendingByImage_IsCaseInsensitive()
+    {
+        _tracker.AddUpdate(new DiunPayload { Image = "Nginx:Latest" });
+
+        Assert.Single(_tracker.GetPendingByImage("nginx:latest"));
+        Assert.Single(_tracker.GetPendingByImage("NGINX:LATEST"));
+    }
+
+    [Fact]
+    public void GetPendingByImage_WithNullOrEmpty_ReturnsEmpty()
+    {
+        _tracker.AddUpdate(new DiunPayload { Image = "nginx:latest" });
+
+        Assert.Empty(_tracker.GetPendingByImage(null!));
+        Assert.Empty(_tracker.GetPendingByImage(""));
+        Assert.Empty(_tracker.GetPendingByImage("   "));
+    }
+
+    [Fact]
     public void Updates_PersistAcrossTrackerInstances()
     {
         _tracker.AddUpdate(new DiunPayload { Image = "persist:latest", Hostname = "host1" });

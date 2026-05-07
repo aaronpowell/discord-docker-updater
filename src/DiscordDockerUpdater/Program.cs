@@ -243,6 +243,24 @@ else
             });
         }
 
+        // Supersede any older pending notifications for the same image (different digest).
+        // Posting a new card while a stale one is still on screen is confusing — the channel
+        // ends up with multiple "update available" rows for one image. Delete the old
+        // Discord message and mark the tracker entry completed so /list-updates and /status
+        // also reflect the supersession.
+        var stale = tracker.GetPendingByImage(payload.Image).ToList();
+        foreach (var old in stale)
+        {
+            if (old.DiscordMessageId.HasValue)
+            {
+                await notifier.TryDeleteMessageAsync(old.DiscordMessageId.Value);
+            }
+            tracker.MarkCompleted(old.Id);
+            logger.LogInformation(
+                "Superseded pending update {OldUpdateId} for image {Image} (replaced by newer notification)",
+                old.Id, payload.Image);
+        }
+
         // Add to tracker
         var update = tracker.AddUpdate(payload);
 

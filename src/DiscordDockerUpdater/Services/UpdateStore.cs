@@ -34,16 +34,48 @@ public class UpdateStore : IDisposable
                 discord_message_id INTEGER,
                 is_completed INTEGER NOT NULL DEFAULT 0
             );
-            CREATE INDEX IF NOT EXISTS idx_pending_updates_completed 
+            CREATE INDEX IF NOT EXISTS idx_pending_updates_completed
                 ON pending_updates(is_completed);
-            CREATE INDEX IF NOT EXISTS idx_pending_updates_image_digest 
+            CREATE INDEX IF NOT EXISTS idx_pending_updates_image_digest
                 ON pending_updates(
                     json_extract(payload_json, '$.image'),
                     json_extract(payload_json, '$.digest')
                 );
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             """;
         cmd.ExecuteNonQuery();
         _logger.LogInformation("Update store initialized");
+    }
+
+    /// <summary>
+    /// Reads a value from the meta key/value table, or null if the key is unset.
+    /// Used for one-shot bookkeeping (e.g. "have we run the v1 cleanup yet?").
+    /// </summary>
+    public string? GetMeta(string key)
+    {
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "SELECT value FROM meta WHERE key = @key";
+        cmd.Parameters.AddWithValue("@key", key);
+        var result = cmd.ExecuteScalar();
+        return result is string s ? s : null;
+    }
+
+    /// <summary>
+    /// Writes a value to the meta key/value table, replacing any existing value.
+    /// </summary>
+    public void SetMeta(string key, string value)
+    {
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO meta (key, value) VALUES (@key, @value)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """;
+        cmd.Parameters.AddWithValue("@key", key);
+        cmd.Parameters.AddWithValue("@value", value);
+        cmd.ExecuteNonQuery();
     }
 
     /// <summary>
