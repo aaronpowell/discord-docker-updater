@@ -129,4 +129,105 @@ public class AgentConnectionManagerTests
         Assert.Equal("Linux 6.1.0", agent.Registration.OSDescription);
         Assert.True(agent.ConnectedAt <= DateTimeOffset.UtcNow);
     }
+
+    [Fact]
+    public void TryFindAgent_FindsByHostname()
+    {
+        _manager.RegisterAgent("conn-1", new AgentRegistration { Hostname = "server1" });
+
+        Assert.True(_manager.TryFindAgent("server1", out var agent));
+        Assert.NotNull(agent);
+        Assert.Equal("conn-1", agent!.ConnectionId);
+    }
+
+    [Fact]
+    public void TryFindAgent_FindsByFriendlyName()
+    {
+        _manager.RegisterAgent("conn-1", new AgentRegistration { Hostname = "server1", FriendlyName = "home-server" });
+
+        Assert.True(_manager.TryFindAgent("home-server", out var agent));
+        Assert.NotNull(agent);
+        Assert.Equal("conn-1", agent!.ConnectionId);
+        Assert.Equal("server1", agent.Registration.Hostname);
+    }
+
+    [Fact]
+    public void TryFindAgent_ReturnsFalse_WhenNotFound()
+    {
+        Assert.False(_manager.TryFindAgent("unknown", out var agent));
+        Assert.Null(agent);
+    }
+
+    [Fact]
+    public void TryFindAgent_IsCaseInsensitive_ForBothHostnameAndFriendlyName()
+    {
+        _manager.RegisterAgent("conn-1", new AgentRegistration { Hostname = "ServerOne", FriendlyName = "Home-Server" });
+
+        Assert.True(_manager.TryFindAgent("serverone", out var byHostname));
+        Assert.Equal("conn-1", byHostname!.ConnectionId);
+
+        Assert.True(_manager.TryFindAgent("HOME-SERVER", out var byFriendlyName));
+        Assert.Equal("conn-1", byFriendlyName!.ConnectionId);
+    }
+
+    [Fact]
+    public void TryFindAgent_HostnameTakesPrecedenceOverFriendlyName()
+    {
+        // Agent1 has hostname "home-server" (no friendly name)
+        // Agent2 has hostname "server2" with friendly name "home-server"
+        // Lookup "home-server" should return Agent1 (hostname match wins)
+        _manager.RegisterAgent("conn-1", new AgentRegistration { Hostname = "home-server" });
+        _manager.RegisterAgent("conn-2", new AgentRegistration { Hostname = "server2", FriendlyName = "home-server" });
+
+        Assert.True(_manager.TryFindAgent("home-server", out var agent));
+        Assert.Equal("conn-1", agent!.ConnectionId);
+    }
+
+    [Fact]
+    public void UnregisterAgent_RemovesFriendlyNameIndex()
+    {
+        _manager.RegisterAgent("conn-1", new AgentRegistration { Hostname = "server1", FriendlyName = "my-server" });
+        _manager.UnregisterAgent("conn-1");
+
+        Assert.False(_manager.TryFindAgent("my-server", out _));
+        Assert.False(_manager.TryFindAgent("server1", out _));
+    }
+
+    [Fact]
+    public void RegisterAgent_EvictionCleansFriendlyNameIndex()
+    {
+        // Register conn-1 with friendly name "old-name"
+        _manager.RegisterAgent("conn-1", new AgentRegistration { Hostname = "server1", FriendlyName = "old-name" });
+
+        // Re-register same hostname with conn-2, different friendly name
+        _manager.RegisterAgent("conn-2", new AgentRegistration { Hostname = "server1", FriendlyName = "new-name" });
+
+        // old-name should no longer resolve
+        Assert.False(_manager.TryFindAgent("old-name", out _));
+
+        // new-name should resolve to conn-2
+        Assert.True(_manager.TryFindAgent("new-name", out var agent));
+        Assert.Equal("conn-2", agent!.ConnectionId);
+    }
+
+    [Fact]
+    public void DisplayName_ReturnsFriendlyName_WhenSet()
+    {
+        var registration = new AgentRegistration { Hostname = "server1", FriendlyName = "my-server" };
+        Assert.Equal("my-server", registration.DisplayName);
+    }
+
+    [Fact]
+    public void DisplayName_ReturnsHostname_WhenFriendlyNameIsNull()
+    {
+        var registration = new AgentRegistration { Hostname = "server1" };
+        Assert.Equal("server1", registration.DisplayName);
+    }
+
+    [Fact]
+    public void DisplayName_ReturnsHostname_WhenFriendlyNameIsWhitespace()
+    {
+        var registration = new AgentRegistration { Hostname = "server1", FriendlyName = "   " };
+        Assert.Equal("server1", registration.DisplayName);
+    }
 }

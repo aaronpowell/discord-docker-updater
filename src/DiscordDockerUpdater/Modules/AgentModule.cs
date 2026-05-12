@@ -43,7 +43,7 @@ public class AgentModule(
             var pendingCount = updateTracker.GetPendingUpdatesForHost(reg.Hostname).Count();
 
             embed.AddField(
-                name: $"🖥️ {reg.Hostname}",
+                name: $"🖥️ {reg.DisplayName}",
                 value: $"**Docker:** {reg.DockerVersion ?? "N/A"}\n" +
                        $"**OS:** {reg.OSDescription ?? "N/A"}\n" +
                        $"**Containers:** {containerCount} — {containerList}\n" +
@@ -57,24 +57,14 @@ public class AgentModule(
 
     [SlashCommand("agent-info", "Shows details for a specific connected agent")]
     public async Task AgentInfoAsync(
-        [Summary("hostname", "The hostname of the agent to query")] string hostname)
+        [Summary("name", "The hostname or friendly name of the agent to query")] string name)
     {
-        logger.LogInformation("agent-info command invoked by {User} for host {Hostname}",
-            Context.User.Username, hostname);
+        logger.LogInformation("agent-info command invoked by {User} for name {Name}",
+            Context.User.Username, name);
 
-        if (!connectionManager.IsAgentConnected(hostname))
+        if (!connectionManager.TryFindAgent(name, out var agent) || agent is null)
         {
-            await RespondAsync($"No agent is currently connected for hostname `{hostname}`.", ephemeral: true);
-            return;
-        }
-
-        var agents = connectionManager.GetConnectedAgents();
-        var agent = agents.FirstOrDefault(a =>
-            string.Equals(a.Registration.Hostname, hostname, StringComparison.OrdinalIgnoreCase));
-
-        if (agent is null)
-        {
-            await RespondAsync($"Agent `{hostname}` not found.", ephemeral: true);
+            await RespondAsync($"No agent is currently connected with name `{name}`.", ephemeral: true);
             return;
         }
 
@@ -82,7 +72,7 @@ public class AgentModule(
 
         // Agent info embed
         var infoEmbed = new EmbedBuilder()
-            .WithTitle($"🖥️ Agent: {reg.Hostname}")
+            .WithTitle($"🖥️ Agent: {reg.DisplayName}")
             .WithColor(0x00CC66)
             .AddField("Docker Version", reg.DockerVersion ?? "N/A", inline: true)
             .AddField("OS", reg.OSDescription ?? "N/A", inline: true)
@@ -106,7 +96,7 @@ public class AgentModule(
         if (pendingUpdates.Count > 0)
         {
             var updatesEmbed = new EmbedBuilder()
-                .WithTitle($"📋 Pending Updates on {reg.Hostname}")
+                .WithTitle($"📋 Pending Updates on {reg.DisplayName}")
                 .WithColor(0xFF9900)
                 .WithTimestamp(DateTimeOffset.UtcNow)
                 .WithFooter($"{pendingUpdates.Count} pending update(s)");

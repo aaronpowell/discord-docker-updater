@@ -385,7 +385,7 @@ public class DiscordBotService(
                 .WithDescription($"Container **{containerName}** has been updated")
                 .WithColor(0x00FF00) // Green
                 .AddField("Image", imageName, inline: false)
-                .AddField("Host", update.Payload.Hostname ?? "local", inline: true)
+                .AddField("Host", agentClient.GetDisplayNameForHost(update.Payload.Hostname) ?? "local", inline: true)
                 .AddField("Service", serviceName, inline: true)
                 .AddField("Project", composeInfo.ProjectName, inline: true)
                 .AddField("Triggered By", component.User.Mention, inline: true)
@@ -458,7 +458,7 @@ public class DiscordBotService(
                 .WithDescription($"Failed to update **{imageName}**")
                 .WithColor(0xFF0000) // Red
                 .AddField("Container", containerName, inline: true)
-                .AddField("Host", update.Payload.Hostname ?? "local", inline: true)
+                .AddField("Host", agentClient.GetDisplayNameForHost(update.Payload.Hostname) ?? "local", inline: true)
                 .AddField("Service", serviceName, inline: true)
                 .AddField("Project", composeInfo.ProjectName, inline: true)
                 .AddField("Duration", $"{result.Duration.TotalSeconds:F2}s", inline: true)
@@ -491,6 +491,7 @@ public class DiscordBotService(
         string imageName, string containerName)
     {
         var hostname = update.Payload.Hostname ?? "unknown";
+        var displayName = agentClient.GetDisplayNameForHost(hostname);
         logger.LogInformation(
             "Routing update {UpdateId} for container {Container} to remote agent (host: {Hostname})",
             update.Id, containerName, hostname);
@@ -516,7 +517,7 @@ public class DiscordBotService(
                     .WithDescription($"Container **{containerName}** has been updated")
                     .WithColor(0x00FF00)
                     .AddField("Image", imageName, inline: false)
-                    .AddField("Host", hostname, inline: true)
+                    .AddField("Host", displayName, inline: true)
                     .AddField("Service", response.ServiceName ?? "N/A", inline: true)
                     .AddField("Project", response.ProjectName ?? "N/A", inline: true)
                     .AddField("Triggered By", component.User.Mention, inline: true)
@@ -560,10 +561,10 @@ public class DiscordBotService(
             {
                 var failureEmbed = new EmbedBuilder()
                     .WithTitle("❌ Update Failed")
-                    .WithDescription($"Failed to update **{imageName}** on host **{hostname}**")
+                    .WithDescription($"Failed to update **{imageName}** on host **{displayName}**")
                     .WithColor(0xFF0000)
                     .AddField("Container", containerName, inline: true)
-                    .AddField("Host", hostname, inline: true)
+                    .AddField("Host", displayName, inline: true)
                     .AddField("Duration", $"{response.DurationSeconds:F2}s", inline: true)
                     .WithTimestamp(DateTimeOffset.UtcNow)
                     .WithFooter($"Update ID: {update.Id}")
@@ -585,7 +586,7 @@ public class DiscordBotService(
 
             var errorEmbed = new EmbedBuilder()
                 .WithTitle("❌ Agent Unreachable")
-                .WithDescription($"Could not reach agent on host **{hostname}**")
+                .WithDescription($"Could not reach agent on host **{displayName}**")
                 .WithColor(0xFF0000)
                 .AddField("Container", containerName, inline: true)
                 .AddField("Error", TruncateForDiscord(ex.Message, 1024), inline: false)

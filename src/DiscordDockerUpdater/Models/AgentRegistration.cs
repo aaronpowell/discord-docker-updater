@@ -12,6 +12,20 @@ public class AgentRegistration
     public string Hostname { get; set; } = "";
 
     /// <summary>
+    /// Optional human-readable name for this agent. When set, it is shown in Discord messages
+    /// and accepted in command lookups instead of the machine hostname.
+    /// Falls back to <see cref="Hostname"/> when empty.
+    /// Configured via <c>Bot__FriendlyName</c> in agent mode.
+    /// </summary>
+    public string? FriendlyName { get; set; }
+
+    /// <summary>
+    /// The name to display in Discord messages and commands.
+    /// Returns <see cref="FriendlyName"/> if set, otherwise <see cref="Hostname"/>.
+    /// </summary>
+    public string DisplayName => !string.IsNullOrWhiteSpace(FriendlyName) ? FriendlyName : Hostname;
+
+    /// <summary>
     /// Names of Docker containers currently running on the agent's host.
     /// </summary>
     public List<string>? Containers { get; set; }

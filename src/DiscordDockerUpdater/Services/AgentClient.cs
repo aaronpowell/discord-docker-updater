@@ -26,6 +26,20 @@ public class AgentClient(
     }
 
     /// <summary>
+    /// Returns the display name (friendly name if set, otherwise hostname) for the agent
+    /// connected under the given hostname. Returns the raw hostname if no agent is found.
+    /// </summary>
+    public string GetDisplayNameForHost(string? hostname)
+    {
+        if (string.IsNullOrWhiteSpace(hostname))
+            return "local";
+
+        return connectionManager.TryFindAgent(hostname, out var agent) && agent is not null
+            ? agent.Registration.DisplayName
+            : hostname;
+    }
+
+    /// <summary>
     /// Sends an update command to the agent registered for the given hostname
     /// and waits for the result.
     /// </summary>
